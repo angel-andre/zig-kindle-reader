@@ -1,0 +1,123 @@
+zreader 0.10.4: JPEG 2000 decoding without the global FreeType lock (per-thread
+OpenJPEG context, libc allocation on OpenJPEG's own threads) and with OpenJPEG's
+two-thread code-block decoding. Output is unchanged (decoding is deterministic).
+
+--- a/Makelists	2026-11-07 15:59:10.491413047 -0500
++++ b/Makelists	2026-11-07 15:59:10.499412828 -0500
+@@ -313,7 +313,7 @@
+ OPENJPEG_CFLAGS += -DOPJ_HAVE_STDINT_H
+ 
+ OPENJPEG_BUILD_CFLAGS += -Ithirdparty/openjpeg/src/lib/openjp2
+-OPENJPEG_BUILD_CFLAGS += -DMUTEX_pthread=0
++OPENJPEG_BUILD_CFLAGS += -DMUTEX_pthread=1
+ 
+ OPENJPEG_SRC += thirdparty/openjpeg/src/lib/openjp2/bio.c
+ OPENJPEG_SRC += thirdparty/openjpeg/src/lib/openjp2/cio.c
+--- a/source/fitz/load-jpx.c	2026-11-07 15:59:10.491413047 -0500
++++ b/source/fitz/load-jpx.c	2026-11-07 15:59:10.499412828 -0500
+@@ -25,6 +25,7 @@
+ #include "pixmap-imp.h"
+ 
+ #include <assert.h>
++#include <stdlib.h>
+ #include <string.h>
+ 
+ #if FZ_ENABLE_JPX
+@@ -99,7 +100,12 @@
+  * threading systems.
+  */
+ 
+-static fz_context *fz_opj_secret = NULL;
++/* zreader: the context is per thread and no global lock is taken, so pages
++ * can decode JPEG 2000 in parallel (each thread has its own fz_context).
++ * OpenJPEG's own worker threads have no context; with the default
++ * allocator (zreader never installs another) fz_malloc is plain malloc, so
++ * those threads use libc directly. */
++static _Thread_local fz_context *fz_opj_secret = NULL;
+ 
+ static void set_opj_context(fz_context *ctx)
+ {
+@@ -113,24 +119,20 @@
+ 
+ void fz_opj_lock(fz_context *ctx)
+ {
+-	fz_ft_lock(ctx);
+-
+ 	set_opj_context(ctx);
+ }
+ 
+ void fz_opj_unlock(fz_context *ctx)
+ {
++	(void)ctx;
+ 	set_opj_context(NULL);
+-
+-	fz_ft_unlock(ctx);
+ }
+ 
+ void *fz_opj_malloc(size_t size)
+ {
+ 	fz_context *ctx = get_opj_context();
+ 
+-	assert(ctx != NULL);
+-
++	if (!ctx) return malloc(size);
+ 	return Memento_label(fz_malloc_no_throw(ctx, size), "fz_opj_malloc");
+ }
+ 
+@@ -138,8 +140,7 @@
+ {
+ 	fz_context *ctx = get_opj_context();
+ 
+-	assert(ctx != NULL);
+-
++	if (!ctx) return calloc(n, size);
+ 	return fz_calloc_no_throw(ctx, n, size);
+ }
+ 
+@@ -147,8 +148,7 @@
+ {
+ 	fz_context *ctx = get_opj_context();
+ 
+-	assert(ctx != NULL);
+-
++	if (!ctx) return realloc(ptr, size);
+ 	return fz_realloc_no_throw(ctx, ptr, size);
+ }
+ 
+@@ -156,8 +156,7 @@
+ {
+ 	fz_context *ctx = get_opj_context();
+ 
+-	assert(ctx != NULL);
+-
++	if (!ctx) { free(ptr); return; }
+ 	fz_free(ctx, ptr);
+ }
+ 
+@@ -210,6 +209,7 @@
+ static void fz_opj_error_callback(const char *msg, void *client_data)
+ {
+ 	fz_context *ctx = (fz_context *)client_data;
++	if (ctx != get_opj_context()) return; /* zreader: OpenJPEG worker thread */
+ 	// strlen-1 to trim trailing newline
+ 	fz_warn(ctx, "openjpeg error: %.*s", (int) strlen(msg)-1, msg);
+ }
+@@ -217,6 +217,7 @@
+ static void fz_opj_warning_callback(const char *msg, void *client_data)
+ {
+ 	fz_context *ctx = (fz_context *)client_data;
++	if (ctx != get_opj_context()) return; /* zreader: OpenJPEG worker thread */
+ 	// strlen-1 to trim trailing newline
+ 	fz_warn(ctx, "openjpeg warning: %.*s", (int) strlen(msg)-1, msg);
+ }
+@@ -460,6 +461,10 @@
+ 	/* Set the length to avoid an assert */
+ 	opj_stream_set_user_data_length(stream, size);
+ 
++	/* zreader: decode code-blocks on both cores (output is identical). */
++	if (!onlymeta && opj_has_thread_support())
++		opj_codec_set_threads(codec, 2);
++
+ 	if (!opj_read_header(stream, codec, &jpx))
+ 	{
+ 		opj_stream_destroy(stream);

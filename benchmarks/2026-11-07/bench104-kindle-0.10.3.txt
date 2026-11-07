@@ -1,0 +1,87 @@
+== zreader bench 2026-11-07 20:04:52 ==
+reader: zreader 0.10.3  bench: 4595744a70fa
+kernel: 5.15.41-lab126  cpus: 2  governor: ondemand cur_khz: 1400000 max_khz: 2000000
+mem: MemTotal: 979852 kB MemAvailable: 672268 kB   load: 0.06 0.07 0.06
+
+-- book: scan-B (Narratives of America) -- Allen W_ Eckert -- August 1981 -- Bantam Books.pdf (34867649 bytes)
+  book_bytes=34867649
+  pages=772 pdf=1 reflow=0
+  open_cold_ms=91.2 first_render_cold_ms=5817.4 open_to_first_page_cold_ms=5908.6
+  open_warm_ms=67.9 open_to_first_page_warm_ms=5769.7
+  render_pages=11..40
+  render_n=30 render_p50_ms=340.989 render_p95_ms=362.255 render_max_ms=372.124 render_mean_ms=338.036
+  rerender_n=30 rerender_p50_ms=258.595 rerender_p95_ms=283.546 rerender_max_ms=287.697 rerender_mean_ms=257.700
+  model700_turn_wait_n=30 model700_turn_wait_p50_ms=0.047 model700_turn_wait_p95_ms=0.057 model700_turn_wait_max_ms=0.057 model700_turn_wait_mean_ms=0.047
+  model700_prerender_hit_pct=100
+  model250_turn_wait_n=30 model250_turn_wait_p50_ms=0.043 model250_turn_wait_p95_ms=0.048 model250_turn_wait_max_ms=0.051 model250_turn_wait_mean_ms=0.042
+  model250_prerender_hit_pct=100
+  rss_peak_one_doc_kb=76176 rss_peak_after_renders_kb=139560 rss_peak_two_workers_kb=271812
+  reader cold, 30 turns @0.7s: first_frame_ms=5988 first8_avg=440ms max=580ms
+    turn(touch-up->complete,us): n=30 min= 4237 p50= 6996 avg= 8117 p90= 15679 max= 24242 us
+    render(workers,us): n=34 min= 302868 p50= 366963 avg= 378386 p90= 434162 max= 580542 us
+    reader rc=0 rss_peak_kb=166976
+  reader warm, 30 turns @0.25s: first_frame_ms=34 first8_avg=419ms max=552ms
+    turn(touch-up->complete,us): n=30 min= 3965 p50= 11795 avg= 12979 p90= 17904 max= 26787 us
+    render(workers,us): n=36 min= 322840 p50= 346991 avg= 362947 p90= 406270 max= 552012 us
+    reader rc=0 rss_peak_kb=163900
+
+-- book: The scan-c -- Author C, Author C .pdf (24433920 bytes)
+  book_bytes=24433920
+  pages=478 pdf=1 reflow=0
+  open_cold_ms=30.9 first_render_cold_ms=12926.5 open_to_first_page_cold_ms=12957.5
+  open_warm_ms=12.3 open_to_first_page_warm_ms=12768.8
+  render_pages=11..40
+  render_n=30 render_p50_ms=373.082 render_p95_ms=383.189 render_max_ms=388.674 render_mean_ms=366.000
+  rerender_n=30 rerender_p50_ms=234.854 rerender_p95_ms=239.537 rerender_max_ms=239.788 rerender_mean_ms=227.096
+  model700_turn_wait_n=30 model700_turn_wait_p50_ms=0.045 model700_turn_wait_p95_ms=0.055 model700_turn_wait_max_ms=0.058 model700_turn_wait_mean_ms=0.045
+  model700_prerender_hit_pct=100
+  model250_turn_wait_n=30 model250_turn_wait_p50_ms=0.037 model250_turn_wait_p95_ms=0.060 model250_turn_wait_max_ms=0.066 model250_turn_wait_mean_ms=0.040
+  model250_prerender_hit_pct=100
+  rss_peak_one_doc_kb=128692 rss_peak_after_renders_kb=244304 rss_peak_two_workers_kb=296000
+  reader cold, 30 turns @0.7s: first_frame_ms=12983 first8_avg=5019ms max=16308ms
+    turn(touch-up->complete,us): n=12 min= 4091 p50= 7567 avg=1210166 p90= 765356 max=13602578 us
+    render(workers,us): n=21 min= 377858 p50= 416838 avg=2171221 p90=4617992 max=16308662 us
+    reader rc=0 rss_peak_kb=250372
+  reader warm, 30 turns @0.25s: first_frame_ms=36 first8_avg=422ms max=510ms
+    turn(touch-up->complete,us): n=30 min= 4666 p50= 11801 avg= 11922 p90= 14717 max= 34311 us
+    render(workers,us): n=36 min= 366921 p50= 392887 avg= 400085 p90= 429689 max= 510661 us
+    reader rc=0 rss_peak_kb=246120
+
+-- book: book-E -- Andrija Puharich.epub (6797128 bytes)
+  book_bytes=6797128
+  pages=613 pdf=0 reflow=1
+  open_cold_ms=3354.9 first_render_cold_ms=355.4 open_to_first_page_cold_ms=3710.4
+  open_warm_ms=13.3 open_to_first_page_warm_ms=353.2
+  render_pages=11..40
+  render_n=30 render_p50_ms=13.782 render_p95_ms=100.780 render_max_ms=108.107 render_mean_ms=20.192
+  rerender_n=30 rerender_p50_ms=12.514 rerender_p95_ms=13.277 rerender_max_ms=32.024 rerender_mean_ms=12.118
+  model700_turn_wait_n=30 model700_turn_wait_p50_ms=0.045 model700_turn_wait_p95_ms=0.051 model700_turn_wait_max_ms=0.054 model700_turn_wait_mean_ms=0.045
+  model700_prerender_hit_pct=100
+  model250_turn_wait_n=30 model250_turn_wait_p50_ms=0.049 model250_turn_wait_p95_ms=0.059 model250_turn_wait_max_ms=0.059 model250_turn_wait_mean_ms=0.048
+  model250_prerender_hit_pct=100
+  rss_peak_one_doc_kb=53440 rss_peak_after_renders_kb=53612 rss_peak_two_workers_kb=66404
+  reader cold, 30 turns @0.7s: first_frame_ms=411 first8_avg=58ms max=220ms
+    turn(touch-up->complete,us): n=30 min= 4811 p50= 7137 avg= 22621 p90= 101781 max= 247089 us
+    render(workers,us): n=34 min= 5838 p50= 26455 avg= 34443 p90= 38632 max= 220859 us
+    reader rc=0 rss_peak_kb=113636
+  reader warm, 30 turns @0.25s: first_frame_ms=308 first8_avg=35ms max=135ms
+    turn(touch-up->complete,us): n=30 min= 4531 p50= 6964 avg= 13875 p90= 13507 max= 185214 us
+    render(workers,us): n=36 min= 6578 p50= 26031 avg= 28768 p90= 33366 max= 135229 us
+    reader rc=0 rss_peak_kb=66120
+
+-- library: /mnt/us/documents
+  cold: books=17 scan_ms=20 first_frame_after_scan_ms=50 covers_pending_at_first_frame=7 last_cover_batch_ms_after_start=2720 (2 batches)
+  cached: books=17 scan_ms=21 first_frame_after_scan_ms=35 covers_pending_at_first_frame=0 last_cover_batch_ms_after_start=none pending (0 batches)
+
+-- dictionary
+  en_open_ms=63.47 en_ok=1
+  en_lookup_first_lookup_ms=12.352
+  en_lookup_found=40/40
+  en_lookup_n=1000 en_lookup_p50_ms=0.006 en_lookup_p95_ms=0.027 en_lookup_max_ms=13.755 en_lookup_mean_ms=0.113
+  la_open_ms=2.89 la_ok=1
+  la_lookup_first_lookup_ms=18.724
+  la_lookup_found=40/40
+  la_lookup_n=1000 la_lookup_p50_ms=0.083 la_lookup_p95_ms=0.147 la_lookup_max_ms=10.271 la_lookup_mean_ms=0.149
+  rss_peak_kb=12344
+
+report: bench/report-DATE.txt

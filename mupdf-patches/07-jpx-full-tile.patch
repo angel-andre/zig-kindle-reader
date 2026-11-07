@@ -1,0 +1,106 @@
+zreader 0.10.4: keep the full-size decode of a JPEG 2000 image in the store and
+subsample a copy of it for the next scale, instead of decoding the image again
+(e.g. ink-trim pass at 0.5x, then the screen). Same pixels as a fresh decode.
+
+--- a/source/fitz/image.c	2026-11-07 15:59:10.499412828 -0500
++++ b/source/fitz/image.c	2026-11-07 16:02:00.524721579 -0500
+@@ -1015,6 +1015,81 @@
+ 	return NULL;
+ }
+ 
++/* zreader: JPEG 2000 has no reduced-resolution decode here, so every request
++ * decodes the whole image and then subsamples it. A page drawn at two scales
++ * (ink-trim pass, then the screen) used to decode it twice. The full-size
++ * decode is now also kept in the store (key l2factor 0), and the next request
++ * at another l2factor subsamples a copy of it (and releases it): the same
++ * pixels a fresh decode would give, so output is unchanged. */
++#define ZR_JPX_KEEP_MAX ((size_t)64 << 20)
++static fz_pixmap *zr_copy_tile(fz_context *ctx, const fz_pixmap *old)
++{
++	fz_pixmap *pix = fz_new_pixmap_with_bbox(ctx, old->colorspace, fz_make_irect(old->x, old->y, old->x + old->w, old->y + old->h), old->seps, old->alpha);
++	memcpy(pix->samples, old->samples, (size_t)pix->stride * pix->h);
++	pix->xres = old->xres;
++	pix->yres = old->yres;
++	pix->flags = (pix->flags & FZ_PIXMAP_FLAG_FREE_SAMPLES) | (old->flags & ~FZ_PIXMAP_FLAG_FREE_SAMPLES);
++	return pix;
++}
++static int zr_jpx_full(fz_context *ctx, fz_image *image, const fz_image_key *key)
++{
++	return fz_compressed_image_type(ctx, image) == FZ_IMAGE_JPX && !image->use_colorkey &&
++		key->rect.x0 == 0 && key->rect.y0 == 0 && key->rect.x1 == image->w && key->rect.y1 == image->h;
++}
++static void zr_keep_full_tile(fz_context *ctx, fz_image *image, const fz_image_key *key, fz_pixmap *tile)
++{
++	fz_image_key *k = NULL;
++	fz_pixmap *copy = NULL, *existing;
++	if (fz_pixmap_size(ctx, tile) > ZR_JPX_KEEP_MAX)
++		return;
++	fz_var(k);
++	fz_var(copy);
++	fz_try(ctx)
++	{
++		copy = zr_copy_tile(ctx, tile);
++		k = fz_malloc_struct(ctx, fz_image_key);
++		k->refs = 1;
++		k->image = fz_keep_image_store_key(ctx, image);
++		k->l2factor = 0;
++		k->rect = key->rect;
++		existing = fz_store_item(ctx, k, copy, fz_pixmap_size(ctx, copy), &fz_image_store_type);
++		fz_drop_pixmap(ctx, existing);
++	}
++	fz_always(ctx)
++	{
++		fz_drop_image_key(ctx, k);
++		fz_drop_pixmap(ctx, copy);
++	}
++	fz_catch(ctx)
++	{
++		fz_rethrow_if(ctx, FZ_ERROR_SYSTEM);
++		fz_ignore_error(ctx);
++	}
++}
++static fz_pixmap *zr_find_full_tile(fz_context *ctx, fz_image *image, int l2factor)
++{
++	fz_image_key k;
++	fz_pixmap *full, *copy = NULL;
++	if (l2factor <= 0 || fz_compressed_image_type(ctx, image) != FZ_IMAGE_JPX || image->use_colorkey)
++		return NULL;
++	k.refs = 1;
++	k.image = image;
++	k.l2factor = 0;
++	k.rect = fz_make_irect(0, 0, image->w, image->h);
++	full = fz_find_item(ctx, fz_drop_pixmap_imp, &k, &fz_image_store_type);
++	if (!full)
++		return NULL;
++	/* One-shot: the copy kept for the second scale is not held any longer. */
++	fz_remove_item(ctx, fz_drop_pixmap_imp, &k, &fz_image_store_type);
++	fz_try(ctx)
++		copy = zr_copy_tile(ctx, full);
++	fz_always(ctx)
++		fz_drop_pixmap(ctx, full);
++	fz_catch(ctx)
++		fz_rethrow(ctx);
++	return copy;
++}
++
+ fz_pixmap *
+ fz_get_pixmap_from_image(fz_context *ctx, fz_image *image, const fz_irect *subarea, fz_matrix *ctm, int *dw, int *dh)
+ {
+@@ -1103,7 +1178,16 @@
+ 
+ 	/* We'll have to decode the image; request the correct amount of downscaling. */
+ 	l2factor_remaining = l2factor;
+-	tile = image->get_pixmap(ctx, image, &key.rect, w, h, &l2factor_remaining);
++	tile = zr_find_full_tile(ctx, image, l2factor);
++	if (tile)
++		key.rect = fz_make_irect(0, 0, image->w, image->h);
++	else
++	{
++		tile = image->get_pixmap(ctx, image, &key.rect, w, h, &l2factor_remaining);
++		if (l2factor_remaining > 0 && l2factor_remaining == l2factor && zr_jpx_full(ctx, image, &key) &&
++			tile->x == 0 && tile->y == 0 && tile->w == image->w && tile->h == image->h)
++			zr_keep_full_tile(ctx, image, &key, tile);
++	}
+ 
+ 	/* Update the ctm to allow for subareas. */
+ 	update_ctm_for_subarea(ctm, &key.rect, image->w, image->h);

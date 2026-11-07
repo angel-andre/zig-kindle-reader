@@ -16,6 +16,8 @@ int zr_relayout(zr_doc *z, float lw, float lh, float font_pt, float margin_pt, i
 int zr_page_bounds(zr_doc *z, int page, float *r4);
 int zr_ink_bbox(zr_doc *z, int page, float *r4, int no_images);
 int zr_ink_bbox_flags(zr_doc *z, int page, float *r, int no_images, int flags);
+/* v0.10.4: 1 when a first-page draft (image flags bit 2) is worth drawing. */
+int zr_draft_wanted(zr_doc *z, int page, int flags, int w, int h);
 /* m6 is a page-to-screen matrix (a b c d e f). Uses a cached display list. */
 int zr_render(zr_doc *z, int page, const float *m6, unsigned char *out, int w, int h, int stride, int no_images);
 int zr_words(zr_doc *z, int page, zr_word *out, int max, char *text, int cap);
@@ -48,7 +50,9 @@ void zr_ui_text(zr_ui *u, int font, float size, unsigned char *buf, int w, int h
 /* Conservative screen-space union of raster image footprints, collected during
  * the existing draw pass. Image dithering affects opaque, axis-aligned images
  * as they are drawn, not later text/vector operations. */
-typedef struct { float image_coverage; int image_count; int cleaned; } zr_render_stats;
+/* drafted: image_dither bit 2 replaced a large JPEG 2000 image with a reduced
+ * draft (first page after opening only; the exact page must follow). */
+typedef struct { float image_coverage; int image_count; int cleaned; int drafted; } zr_render_stats;
 int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *out,
     int w, int h, int stride, int no_images, int image_dither, zr_render_stats *stats);
 
@@ -59,5 +63,7 @@ zr_doc *zr_open_style(const char *,float,float,float,float,float);
 zr_doc *zr_open_cover(const char *);
 
 zr_doc *zr_open_initial(const char *,float,float,float,float,float);
+/* v0.10.4: lays out chapters 0..chapter only when no layout is cached (pending). */
+zr_doc *zr_open_upto(const char *,float,float,float,float,float,int);
 void zr_page_count_hint(zr_doc *,int);
 int zr_drm_check(const char *path);

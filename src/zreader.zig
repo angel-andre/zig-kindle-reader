@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.10.3";
+const VERSION = "0.10.4";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 // v0.10.0 second book font (OFL, Latin subset) and compact Latin hyphenation patterns (MIT).
 const sans_bold = @embedFile("fonts/NotoSans-Bold-Latin.ttf");
@@ -28,6 +28,7 @@ extern fn zr_open(path: [*:0]const u8, lw: f32, lh: f32, font: f32, margin: f32)
 extern fn zr_open_style(path: [*:0]const u8, lw: f32, lh: f32, font: f32, margin: f32, spacing: f32) ?*ZrDoc;
 extern fn zr_open_worker(path: [*:0]const u8, lw: f32, lh: f32, font: f32, margin: f32, spacing: f32, progress: *const fn (c_int) callconv(.c) c_int) ?*ZrDoc;
 extern fn zr_open_initial(path: [*:0]const u8, lw: f32, lh: f32, font: f32, margin: f32, spacing: f32) ?*ZrDoc;
+extern fn zr_open_upto(path: [*:0]const u8, lw: f32, lh: f32, font: f32, margin: f32, spacing: f32, chapter: c_int) ?*ZrDoc;
 extern fn zr_pagination_pending(z: *ZrDoc) c_int;
 extern fn zr_page_count_hint(z: *ZrDoc, pages: c_int) void;
 extern fn zr_layout_cache(data: [*:0]const u8) void;
@@ -77,7 +78,8 @@ extern fn zr_page_bounds(z: *ZrDoc, page: c_int, r: *[4]f32) c_int;
 extern fn zr_ink_bbox(z: *ZrDoc, page: c_int, r: *[4]f32, no_images: c_int) c_int;
 extern fn zr_ink_bbox_flags(z: *ZrDoc, page: c_int, r: *[4]f32, no_images: c_int, flags: c_int) c_int;
 extern fn zr_render(z: *ZrDoc, page: c_int, m: *const [6]f32, out: [*]u8, w: c_int, h: c_int, stride: c_int, no_images: c_int) c_int;
-const ZrRenderStats = extern struct { image_coverage: f32 = 0, image_count: c_int = 0, cleaned: c_int = 0 };
+const ZrRenderStats = extern struct { image_coverage: f32 = 0, image_count: c_int = 0, cleaned: c_int = 0, drafted: c_int = 0 };
+extern fn zr_draft_wanted(z: *ZrDoc, page: c_int, flags: c_int, w: c_int, h: c_int) c_int;
 extern fn zr_render_with_stats(z: *ZrDoc, page: c_int, m: *const [6]f32, out: [*]u8, w: c_int, h: c_int, stride: c_int, no_images: c_int, image_dither: c_int, stats: *ZrRenderStats) c_int;
 
 extern fn zr_words(z: *ZrDoc, page: c_int, out: [*]ZrWord, max: c_int, text: [*]u8, cap: c_int) c_int;
@@ -895,7 +897,7 @@ fn cycleRefreshSetting() void {
 // ---------------- page cache + render workers ----------------
 const NSLOT = 14;
 const SlotState = enum(u8) { empty, rendering, ready, failed };
-const Slot = struct { step: i32 = 0, geometry: ViewGeometry = .{}, metrics: PageMetrics = .{}, page: i32 = -1, gen: u32 = 0, state: SlotState = .empty, buf: []u8 = &.{}, used: u64 = 0, m: [6]f32 = .{ 1, 0, 0, 1, 0, 0 } };
+const Slot = struct { draft: bool = false, step: i32 = 0, geometry: ViewGeometry = .{}, metrics: PageMetrics = .{}, page: i32 = -1, gen: u32 = 0, state: SlotState = .empty, buf: []u8 = &.{}, used: u64 = 0, m: [6]f32 = .{ 1, 0, 0, 1, 0, 0 } };
 const Trim = struct { done: bool = false, r: [4]f32 = .{ 0, 0, 0, 0 } };
 const Pool = struct {
     mtx: PMutex = .{},
@@ -967,9 +969,23 @@ fn wantedList(out: *[10]ViewKey) usize {
     };
     return n;
 }
+// v0.10.4: a first-page draft is shown only until the exact page is ready.
 fn slotForKey(key: ViewKey) ?usize {
-    for (&pool.slots, 0..) |*slot, i| if (slot.page == key.p and slot.step == key.step and slot.gen == pool.gen and slot.state != .empty) return i;
-    return null;
+    var draft: ?usize = null;
+    var rendering: ?usize = null;
+    for (&pool.slots, 0..) |*slot, i| if (slot.page == key.p and slot.step == key.step and slot.gen == pool.gen and slot.state != .empty) {
+        if (slot.draft) {
+            draft = i;
+        } else if (slot.state == .rendering) {
+            rendering = i;
+        } else return i;
+    };
+    return draft orelse rendering;
+}
+// True when an exact (non-draft) slot exists or is being rendered.
+fn keyCovered(key: ViewKey) bool {
+    for (&pool.slots) |*slot| if (slot.page == key.p and slot.step == key.step and slot.gen == pool.gen and slot.state != .empty and !slot.draft) return true;
+    return false;
 }
 fn slotFor(p: i32) ?usize {
     return slotForKey(.{ .p = p, .step = if (p == pool.cur) pool.step else 0 });
@@ -980,7 +996,7 @@ fn pickJob() ?Job {
     var want: [10]ViewKey = undefined;
     const n = wantedList(&want);
     for (want[0..n]) |key| {
-        if (slotForKey(key) != null) continue;
+        if (keyCovered(key)) continue;
         var best: ?usize = null;
         var score: u64 = std.math.maxInt(u64);
         for (&pool.slots, 0..) |*slot, i| {
@@ -1207,6 +1223,7 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
         slot.step = job.step;
         slot.gen = my_gen;
         slot.state = .rendering;
+        slot.draft = false;
         pool.busy += 1;
         govBoost(true);
         const mode = pool.view;
@@ -1638,6 +1655,7 @@ fn pcCurrentKey() u64 {
 // fb currently holds raster+overlays for pool.cur (called from drawReader before menus).
 fn pcSubmitFb(final: bool) void {
     if (!book.open or opts.page_cache_mib == 0) return;
+    if (draft_slot != null) return; // never save a draft as the page's image
     if (final) zr_pc_flush();
     var nb: [32]u8 = undefined;
     const key = pcCurrentKey();
@@ -1739,7 +1757,105 @@ fn closeBook() void {
     book.words_page = -1;
 }
 
+// v0.10.4: the first page after opening a PDF may be a picture page (e.g. a
+// scanned colour cover) whose full-resolution JPEG 2000 layers take seconds
+// to decode on the device. It is then drawn first as a draft: untrimmed page
+// bounds, half resolution, large images decoded reduced; a worker renders the
+// exact page next and it replaces the draft with a non-flashing update.
+var draft_slot: ?usize = null;
+var draft_buf: []u8 = &.{};
+fn renderDraftRaster(doc: *ZrDoc) bool {
+    if (!book.is_pdf or pc_preview_active or opts.no_images or pool.view != .page or pool.step != 0) return false;
+    if (zr_draft_wanted(doc, pool.cur, imageFlags(), @intCast(W), @intCast(H)) == 0) return false;
+    const hw = W / 2;
+    const hh = H / 2;
+    if (draft_buf.len < hw * hh) draft_buf = alloc.alloc(u8, hw * hh) catch return false;
+    var r: [4]f32 = .{ 0, 0, 612, 792 };
+    if (zr_page_bounds(doc, pool.cur, &r) != 0) return false;
+    const slot = &pool.slots[0];
+    const geometry = viewGeometry(r, pool.view, pool.base_width, pool.step, pool.pan_x, pool.pan_y);
+    var hm = geometry.m;
+    for (&hm) |*v| v.* *= 0.5;
+    var rs: ZrRenderStats = .{};
+    if (zr_render_with_stats(doc, pool.cur, &hm, draft_buf.ptr, @intCast(hw), @intCast(hh), @intCast(hw), 0, imageFlags() | 4, &rs) != 0 or rs.drafted == 0) return false;
+    upscale2(draft_buf, hw, hh, slot.buf, W, H, STRIDE);
+    slot.geometry = geometry;
+    slot.m = geometry.m;
+    slot.page = pool.cur;
+    slot.step = pool.step;
+    slot.gen = pool.gen;
+    slot.state = .ready;
+    slot.draft = true;
+    slot.metrics = pageMetrics(slot.buf, W, H, STRIDE, rs.image_coverage);
+    draft_slot = 0;
+    logf("open profile: first page drawn as a draft p={d}", .{pool.cur + 1});
+    return true;
+}
+// Bilinear 2x enlargement (pixel centres aligned).
+fn upscale2(src: []const u8, sw: usize, sh: usize, dst: []u8, dw: usize, dh: usize, stride: usize) void {
+    var y: usize = 0;
+    while (y < dh) : (y += 1) {
+        // source row (y + 0.5) / 2 - 0.5 = (2y - 1) / 4, in quarter-pixel units
+        const sy4: isize = @as(isize, @intCast(2 * y)) - 1;
+        const y0: isize = @divFloor(sy4, 4);
+        const wy: u32 = @intCast(@mod(sy4, 4)); // 0..3 quarters
+        const ya: usize = @intCast(std.math.clamp(y0, 0, @as(isize, @intCast(sh - 1))));
+        const yb: usize = @intCast(std.math.clamp(y0 + 1, 0, @as(isize, @intCast(sh - 1))));
+        var x: usize = 0;
+        while (x < dw) : (x += 1) {
+            const sx4: isize = @as(isize, @intCast(2 * x)) - 1;
+            const x0: isize = @divFloor(sx4, 4);
+            const wx: u32 = @intCast(@mod(sx4, 4));
+            const xa: usize = @intCast(std.math.clamp(x0, 0, @as(isize, @intCast(sw - 1))));
+            const xb: usize = @intCast(std.math.clamp(x0 + 1, 0, @as(isize, @intCast(sw - 1))));
+            const p00: u32 = src[ya * sw + xa];
+            const p01: u32 = src[ya * sw + xb];
+            const p10: u32 = src[yb * sw + xa];
+            const p11: u32 = src[yb * sw + xb];
+            const top = p00 * (4 - wx) + p01 * wx;
+            const bot = p10 * (4 - wx) + p11 * wx;
+            dst[y * stride + x] = @intCast((top * (4 - wy) + bot * wy + 8) / 16);
+        }
+    }
+}
+// Main thread: once the exact page is ready, it replaces the draft on screen
+// with a REAGL (non-flashing) update; the draft slot is released.
+fn refineDraft() void {
+    const di = draft_slot orelse return;
+    _ = pthread_mutex_lock(&pool.mtx);
+    const d = &pool.slots[di];
+    var show = false;
+    var final: ?usize = null;
+    if (d.state == .empty or !d.draft or d.gen != pool.gen) {
+        d.draft = false;
+        draft_slot = null;
+    } else {
+        const key = ViewKey{ .p = d.page, .step = d.step };
+        for (&pool.slots, 0..) |*slot, i| if (i != di and slot.page == key.p and slot.step == key.step and slot.gen == pool.gen and (slot.state == .ready or slot.state == .failed) and !slot.draft) {
+            final = i;
+        };
+        if (final != null) {
+            show = pool.shown == @as(i32, @intCast(di)) and d.page == pool.cur;
+            d.state = .empty;
+            d.draft = false;
+            d.page = -1;
+            if (pool.shown == @as(i32, @intCast(di))) pool.shown = -1;
+            draft_slot = null;
+        }
+    }
+    if (show) if (final) |fi| {
+        previous_metrics = pool.slots[fi].metrics;
+        saveSamples(previous_samples, pool.slots[fi].buf, W, H, STRIDE);
+    };
+    _ = pthread_mutex_unlock(&pool.mtx);
+    if (show and screen == .reader and !need_page) {
+        markFull(WF_REAGL);
+        logf("open profile: draft replaced by the exact page (REAGL, no flash) after {d}us", .{nowUs() - pc_open_us});
+    }
+}
 fn renderFirstRaster(doc: *ZrDoc) void {
+    pool.slots[0].draft = false;
+    if (renderDraftRaster(doc)) return;
     var r: [4]f32 = .{ 0, 0, 612, 792 };
     const ni: c_int = @intFromBool(opts.no_images);
     const rc = if (pool.trim) zr_ink_bbox_flags(doc, pool.cur, &r, ni, imageFlags()) else zr_page_bounds(doc, pool.cur, &r);
@@ -1818,7 +1934,7 @@ fn openBook(path: []const u8) bool {
     pc_turns = 0;
     pcShowPreview(st);
     const open_start = nowUs();
-    const doc = (if (st.typography and st.page == 0 and st.anchor.chapter < 0) zr_open_initial(zpath, LW, LH, st.font, st.margin, st.spacing) else if (st.typography) zr_open_style(zpath, LW, LH, st.font, st.margin, st.spacing) else zr_open(zpath, LW, LH, st.font, st.margin)) orelse {
+    const doc = (if (st.typography and st.page == 0 and st.anchor.chapter < 0) zr_open_initial(zpath, LW, LH, st.font, st.margin, st.spacing) else if (st.typography and st.anchor.chapter >= 0) zr_open_upto(zpath, LW, LH, st.font, st.margin, st.spacing, st.anchor.chapter) else if (st.typography) zr_open_style(zpath, LW, LH, st.font, st.margin, st.spacing) else zr_open(zpath, LW, LH, st.font, st.margin)) orelse {
         logf("cannot open {s}", .{path});
         return false;
     };
@@ -1837,7 +1953,9 @@ fn openBook(path: []const u8) bool {
     for (&pool.slots) |*s| {
         s.state = .empty;
         s.page = -1;
+        s.draft = false;
     }
+    draft_slot = null;
     pool.npages = np;
     pool.paginating = zr_pagination_pending(doc) != 0;
     pool.cur = std.math.clamp(st.page, 0, np - 1);
@@ -5942,6 +6060,7 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
             if (pf.revents & linux.POLL.IN == 0) continue;
             if (pf.fd == rp[0]) {
                 _ = linux.read(rp[0], &drain, drain.len);
+                if (draft_slot != null) refineDraft();
                 continue;
             }
             if (pf.fd == dp[0]) {

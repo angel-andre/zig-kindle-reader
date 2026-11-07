@@ -160,7 +160,7 @@ static void save_layout(zr_doc *z,const char *name){
  fz_try(z->ctx){fz_save_accelerator(z->ctx,z->doc,tmp);struct stat st;if(!stat(tmp,&st)&&st.st_size<=16384)rename(tmp,name);}
  fz_catch(z->ctx){}unlink(tmp);
 }
-static zr_doc *open_style(const char *path,float lw,float lh,float font_pt,float margin_pt,float spacing,int styled,int cover)
+static zr_doc *open_style(const char *path,float lw,float lh,float font_pt,float margin_pt,float spacing,int styled,int cover,int upto)
 {
 	if (cover == 1 && zr_drm_check(path)) return NULL; /* no cover for DRM books */
 	zr_doc *z = calloc(1, sizeof *z);
@@ -184,15 +184,24 @@ static zr_doc *open_style(const char *path,float lw,float lh,float font_pt,float
             set_css(z->ctx, z->doc, margin_pt, font_pt, z->spacing, z->styled);
             fz_layout_document(z->ctx, z->doc, lw, lh, font_pt);
         }
-		z->pending = cover==2 && !accel && z->reflow;
+		z->pending = (cover==2 || cover==3) && !accel && z->reflow;
         if(z->reflow && cover==0 && !accel && pagination_progress){
             z->pages=0;int chapters=fz_count_chapters(z->ctx,z->doc);
             for(int ch=0;ch<chapters;ch++){
                 z->pages+=fz_count_chapter_pages(z->ctx,z->doc,ch);
                 if(!pagination_progress(z->pages))fz_throw(z->ctx,FZ_ERROR_ABORT,"pagination cancelled");
             }
+        } else if (cover==3 && z->pending) {
+            /* v0.10.4: reopening at a saved position without a cached layout lays
+             * out chapters 0..upto only (page numbers there are already final);
+             * the rest is counted in the background, as for a first open. */
+            int chapters=fz_count_chapters(z->ctx,z->doc);
+            if(upto>=chapters)upto=chapters-1;
+            z->pages=0;
+            for(int ch=0;ch<=upto;ch++)z->pages+=fz_count_chapter_pages(z->ctx,z->doc,ch);
+            if(upto>=chapters-1)z->pending=0;
         } else z->pages = z->reflow && (cover==1 || z->pending) ? fz_count_chapter_pages(z->ctx,z->doc,0) : fz_count_pages(z->ctx,z->doc);
-        if(cover!=1&&!z->pending&&z->reflow&&!accel)save_layout(z,ap);
+        if(cover!=1&&cover!=3&&!z->pending&&z->reflow&&!accel)save_layout(z,ap);
 		fz_html_page_break_fix = 0;
 	}
 	fz_catch(z->ctx) {
@@ -206,12 +215,13 @@ static zr_doc *open_style(const char *path,float lw,float lh,float font_pt,float
 	return z;
 }
 
-zr_doc *zr_open(const char *path,float w,float h,float em,float margin){return open_style(path,w,h,em,margin,1.4f,0,0);}
-zr_doc *zr_open_style(const char *path,float w,float h,float em,float margin,float spacing){return open_style(path,w,h,em,margin,spacing,1,0);}
-zr_doc *zr_open_initial(const char *path,float w,float h,float em,float margin,float spacing){return open_style(path,w,h,em,margin,spacing,1,2);}
+zr_doc *zr_open(const char *path,float w,float h,float em,float margin){return open_style(path,w,h,em,margin,1.4f,0,0,0);}
+zr_doc *zr_open_style(const char *path,float w,float h,float em,float margin,float spacing){return open_style(path,w,h,em,margin,spacing,1,0,0);}
+zr_doc *zr_open_initial(const char *path,float w,float h,float em,float margin,float spacing){return open_style(path,w,h,em,margin,spacing,1,2,0);}
+zr_doc *zr_open_upto(const char *path,float w,float h,float em,float margin,float spacing,int chapter){return open_style(path,w,h,em,margin,spacing,1,3,chapter<0?0:chapter);}
 /* Main-thread hint from the full-pagination worker, no document sharing. */
 void zr_page_count_hint(zr_doc *z,int pages){if(pages>=z->pages){z->pages=pages;z->pending=0;}}
-zr_doc *zr_open_cover(const char *path){return open_style(path,306,407,10.5,18,1.4f,0,1);}
+zr_doc *zr_open_cover(const char *path){return open_style(path,306,407,10.5,18,1.4f,0,1,0);}
 
 static void drop_lists(zr_doc *z)
 {
@@ -312,15 +322,105 @@ static void maybe_skip_images(fz_device *dev, int no_images)
 static int mrc_fast(fz_context *ctx, fz_display_list *l, fz_matrix m, fz_device *dev, unsigned char *out, int stride, int w, int h, double page_area, fz_rect *bbox);
 int zr_ink_bbox_flags(zr_doc *z, int page, float *r, int no_images, int flags);
 int zr_ink_bbox(zr_doc *z, int page, float *r, int no_images) { return zr_ink_bbox_flags(z,page,r,no_images,0); }
+/* v0.10.4 first-page draft (flags bit 2): a large JPEG 2000 image that the
+ * scan fast paths did not handle (typically a full-colour scanned cover) is
+ * decoded at a reduced OpenJPEG resolution, about a third of its on-screen
+ * size, as grey; its 1-bit mask (if any) is kept as is. Only the first page
+ * shown after opening a book uses it; the exact page replaces it at once. */
+unsigned char *zr_jpx_small_lum2(fz_context *ctx, const unsigned char *data, size_t size, int tw, int th, int *ow, int *oh);
+#define DRAFT_MIN_PIXELS 1000000
+static fz_image *draft_image(fz_context *ctx, fz_image *img, fz_matrix m)
+{
+    if (!img || img->imagemask || (double)img->w*img->h < DRAFT_MIN_PIXELS) return NULL;
+    fz_compressed_buffer *cb = fz_compressed_image_buffer(ctx,img);
+    if (!cb || !cb->buffer || cb->params.type != FZ_IMAGE_JPX) return NULL;
+    fz_rect r = fz_transform_rect(fz_unit_rect,m);
+    int tw=(int)ceilf((r.x1-r.x0)/3), th=(int)ceilf((r.y1-r.y0)/3);
+    if (tw < 16) tw = 16;
+    if (th < 16) th = 16;
+    if (img->w < 2*tw || img->h < 2*th) return NULL;
+    int bw=0, bh=0;
+    unsigned char *lum = zr_jpx_small_lum2(ctx,cb->buffer->data,cb->buffer->len,tw,th,&bw,&bh);
+    if (!lum) return NULL;
+    if (bw >= img->w) { free(lum); return NULL; }
+    fz_pixmap *pix = NULL;
+    fz_image *out = NULL;
+    fz_var(pix);
+    fz_try(ctx) {
+        pix=fz_new_pixmap(ctx,fz_device_gray(ctx),bw,bh,NULL,0);
+        for (int y=0;y<bh;y++) memcpy(pix->samples+(size_t)y*pix->stride,lum+(size_t)y*bw,bw);
+        out=fz_new_image_from_pixmap(ctx,pix,img->mask);
+    }
+    fz_always(ctx) { free(lum); fz_drop_pixmap(ctx,pix); }
+    fz_catch(ctx) { fz_report_error(ctx); out=NULL; }
+    return out;
+}
+typedef struct { fz_device super; int drafted; } zr_draft_device;
+static void draft_fill_only(fz_context *ctx, fz_device *dev, fz_image *img, fz_matrix m, float alpha, fz_color_params cp)
+{
+    zr_draft_device *d = (zr_draft_device *)dev;
+    fz_image *s = draft_image(ctx,img,m);
+    if (!s) { fz_fill_image(ctx,dev->passthrough,img,m,alpha,cp); return; }
+    d->drafted=1;
+    fz_try(ctx) fz_fill_image(ctx,dev->passthrough,s,m,alpha,cp);
+    fz_always(ctx) fz_drop_image(ctx,s);
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+
+
+typedef struct { fz_device super; int big; } zr_count_device;
+static void count_fill_image(fz_context *ctx, fz_device *dev, fz_image *img, fz_matrix m, float alpha, fz_color_params cp)
+{
+    (void)alpha; (void)cp;
+    zr_count_device *d = (zr_count_device *)dev;
+    if (!img || img->imagemask || (double)img->w*img->h < DRAFT_MIN_PIXELS) return;
+    fz_compressed_buffer *cb = fz_compressed_image_buffer(ctx,img);
+    if (!cb || cb->params.type != FZ_IMAGE_JPX) return;
+    fz_rect r = fz_transform_rect(fz_unit_rect,m);
+    if (img->w >= 2*(int)ceilf((r.x1-r.x0)/3) && img->h >= 2*(int)ceilf((r.y1-r.y0)/3)) d->big++;
+}
+/* v0.10.4: 1 when page would draw a large JPEG 2000 image at full resolution
+ * (no scan fast path applies), i.e. when a first-page draft is worth it.
+ * w,h are the screen size the page is fitted to. Decodes nothing big. */
+int zr_draft_wanted(zr_doc *z, int page, int flags, int w, int h)
+{
+	fz_context *ctx = z->ctx;
+	zr_count_device *d = NULL;
+	int want = 0;
+	fz_var(d);
+	fz_try(ctx) {
+		fz_display_list *l = get_list(z, page);
+		fz_rect b = fz_bound_display_list(ctx, l);
+		float bw = b.x1-b.x0, bh = b.y1-b.y0;
+		if (bw > 0 && bh > 0) {
+			float s = fminf(w/bw, h/bh);
+			fz_matrix m = fz_scale(s, s);
+			d = fz_new_derived_device(ctx, zr_count_device);
+			d->super.fill_image = count_fill_image;
+			fz_run_display_list(ctx, l, &d->super, m, fz_infinite_rect, NULL);
+			fz_close_device(ctx, &d->super);
+			want = d->big > 0;
+			fz_rect mb;
+			if (want && (flags & 2) &&
+			    mrc_fast(ctx,l,fz_identity,NULL,NULL,0,(int)ceilf(b.x1),(int)ceilf(b.y1),(double)bw*bh,&mb))
+				want = 0;
+		}
+	}
+	fz_always(ctx) fz_drop_device(ctx, d ? &d->super : NULL);
+	fz_catch(ctx) { fz_report_error(ctx); want = 0; }
+	return want;
+}
 /* flags bit1 (clean scans): MRC scan pages take the bounding box of their 1-bit text mask, without decoding the JPEG 2000 layers. */
 int zr_ink_bbox_flags(zr_doc *z, int page, float *r, int no_images, int flags)
 {
 	fz_context *ctx = z->ctx;
 	fz_pixmap *pix = NULL;
 	fz_device *dev = NULL;
+	zr_draft_device *drafts = NULL;
 	int rc = 0;
 	fz_var(pix);
 	fz_var(dev);
+	fz_var(drafts);
 	fz_try(ctx) {
 		fz_display_list *l = get_list(z, page);
 		fz_rect bounds = fz_bound_display_list(ctx, l);
@@ -339,7 +439,12 @@ int zr_ink_bbox_flags(zr_doc *z, int page, float *r, int no_images, int flags)
 		fz_clear_pixmap_with_value(ctx, pix, 255);
 		dev = fz_new_draw_device(ctx, fz_identity, pix);
 		maybe_skip_images(dev, no_images);
-		fz_run_display_list(ctx, l, dev, m, fz_infinite_rect, &z->cookie);
+		if ((flags & 4) && !no_images) {
+			drafts = fz_new_derived_passthrough_device(ctx,dev,zr_draft_device);
+			drafts->super.fill_image = draft_fill_only;
+		}
+		fz_run_display_list(ctx, l, drafts ? &drafts->super : dev, m, fz_infinite_rect, &z->cookie);
+		if (drafts) fz_close_device(ctx, &drafts->super);
 		fz_close_device(ctx, dev);
 		int w = pix->w, h = pix->h, x0 = w, y0 = h, x1 = -1, y1 = -1;
 		for (int y = 0; y < h; y++) {
@@ -365,6 +470,7 @@ int zr_ink_bbox_flags(zr_doc *z, int page, float *r, int no_images, int flags)
 		r[0] = out.x0; r[1] = out.y0; r[2] = out.x1; r[3] = out.y1;
 	}
 	fz_always(ctx) {
+		fz_drop_device(ctx, drafts ? &drafts->super : NULL);
 		fz_drop_device(ctx, dev);
 		fz_drop_pixmap(ctx, pix);
 	}
@@ -400,6 +506,7 @@ typedef struct {
     int depth, nonraster, gseen, gcand; fz_irect grect;
     double page_area;
     unsigned char *pend_before; fz_irect pend_r;
+    int draft, drafted;
     unsigned char cells[IMAGE_GRID_MAX * IMAGE_GRID_MAX];
 } zr_image_device;
 
@@ -523,7 +630,18 @@ static void note_op(zr_image_device *d)
     else flush_pending(d);
     d->ops++;
 }
+static void image_fill_real(fz_context *ctx, fz_device *dev, fz_image *img, fz_matrix m, float alpha, fz_color_params cp);
 static void image_fill(fz_context *ctx, fz_device *dev, fz_image *img, fz_matrix m, float alpha, fz_color_params cp)
+{
+    zr_image_device *d = (zr_image_device *)dev;
+    fz_image *s = d->draft ? draft_image(ctx,img,m) : NULL;
+    if (!s) { image_fill_real(ctx,dev,img,m,alpha,cp); return; }
+    d->drafted=1;
+    fz_try(ctx) image_fill_real(ctx,dev,s,m,alpha,cp);
+    fz_always(ctx) fz_drop_image(ctx,s);
+    fz_catch(ctx) fz_rethrow(ctx);
+}
+static void image_fill_real(fz_context *ctx, fz_device *dev, fz_image *img, fz_matrix m, float alpha, fz_color_params cp)
 {
     zr_image_device *d = (zr_image_device *)dev;
     if (d->depth > 0) {
@@ -836,7 +954,7 @@ int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *ou
 		dev = fz_new_draw_device(ctx, fz_identity, pix);
         if (!no_images && (stats || image_dither)) {
             images = fz_new_derived_passthrough_device(ctx,dev,zr_image_device);
-            images->out=out; images->w=w; images->h=h; images->stride=stride; images->dither=image_dither&1; images->clean=(image_dither>>1)&1;
+            images->out=out; images->w=w; images->h=h; images->stride=stride; images->dither=image_dither&1; images->clean=(image_dither>>1)&1; images->draft=(image_dither>>2)&1;
             if (images->clean) {
                 fz_rect pr=fz_intersect_rect(fz_transform_rect(fz_bound_display_list(ctx,l),m),fz_make_rect(0,0,w,h));
                 images->page_area=fz_is_empty_rect(pr)?0:(double)(pr.x1-pr.x0)*(pr.y1-pr.y0);
@@ -867,6 +985,7 @@ int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *ou
             stats->image_coverage=(float)area/((float)w*h);
             stats->image_count=images->image_count;
             stats->cleaned=images->cleaned;
+            stats->drafted=images->drafted;
         }
 	}
 	fz_always(ctx) {
@@ -1134,7 +1253,7 @@ void zr_reset_cancel(zr_doc *z){z->cookie.abort=0;}
 int zr_pagination_pending(zr_doc *z){return z->pending;}
 
 zr_doc *zr_open_worker(const char *path,float w,float h,float em,float margin,float spacing,int (*progress)(int)){
- pagination_progress=progress;zr_doc *z=open_style(path,w,h,em,margin,spacing,1,0);pagination_progress=NULL;return z;
+ pagination_progress=progress;zr_doc *z=open_style(path,w,h,em,margin,spacing,1,0,0);pagination_progress=NULL;return z;
 }
 
 /* v0.9.3 reduced-resolution JPEG 2000 previews (needs MuPDF's OpenJPEG headers on the include path) */

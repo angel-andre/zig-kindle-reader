@@ -1,0 +1,41 @@
+zreader bench105 (for 0.10.4)
+
+Install (on the Kindle, over SSH):
+  mkdir -p /mnt/us/zreader && cd /mnt/us/zreader && tar -xzf /mnt/us/bench105.tgz
+Run while zreader is NOT running:
+  sh /mnt/us/zreader/bench/zrbench.sh -l /mnt/us/documents scan-b memory .epub
+
+Each BOOK is a path or a case-insensitive name searched in /mnt/us/documents and
+/mnt/us/Books. -l sets the folder used for the library test (default /mnt/us/Books).
+Takes roughly 2-4 minutes per book plus about 1 minute for the library test.
+
+What it measures
+  zrbench book (the reader's own render code, headless):
+    open_cold / open_warm, open_to_first_page, render p50/p95/max over 30 pages
+    (pages 11-40 with the reader's PDF fit-page + trim + clean-scan settings, EPUB at
+    the default text settings), rerender (display list cached), a prerender model
+    (2 workers, 2 pages ahead, turns every 0.7 s and 0.25 s: hit % and wait), peak RSS.
+  zreader --sim (the installed reader, headless: no /dev/fb0, no touch input, no
+    governor/light/Wi-Fi/Amazon-UI changes): cold open with empty caches + 30 turns at
+    0.7 s, warm reopen + 30 turns at 0.25 s; first frame, touch-up->complete p50/p90
+    (about 1 ms = page was prerendered; a miss shows the render time), worker render
+    times, reader peak RSS (VmHWM sampled every 0.2 s).
+  Library: scan time and time until the last cover batch, cold and cached.
+  Dictionary: English (WordNet) and Latin lookup times, first lookup and p50/p95/max.
+
+Safety: all reader data (state, notes, caches, thumbnails) goes to a temporary folder
+under bench/ that is deleted at the end. /mnt/us/zreader state, notes and settings are
+never read or written. The CPU governor is set to performance for the run, as the
+reader does while rendering, and restored at exit; powerd is kept awake
+(preventScreenSaver 1, back to 0 at exit). Both are printed. bench105 also compares
+MuPDF -O2 (zrbench-o2) with the shipped -Os build: pixel hash and render time.
+Report: printed and saved as /mnt/us/zreader/bench/report-DATE.txt.
+
+Build (from the repository root, after ./build-mupdf.sh):
+  zig cc -target arm-linux-musleabihf -mcpu=cortex_a53 -O2 -I src -I tools/bench -I MUPDF/include \
+    tools/bench/zrbench.c src/render.c src/dictionary.c src/latin.c \
+    MUPDF/build/armhf-release/libmupdf.a MUPDF/build/armhf-release/libmupdf-third.a \
+    -static -lpthread -lm -s -o bench/zrbench
+then copy zrbench, zrbench.sh and this README to /mnt/us/zreader/bench/ on the Kindle.
+zrbench-o2 is the same build against MuPDF built with OPT=-O2 (optional).
+hyph_la.h holds the reader's compact Latin hyphenation patterns (from src/hyph/la).
