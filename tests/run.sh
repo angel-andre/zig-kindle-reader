@@ -24,4 +24,6 @@ out/dictionary-probe dictionary/wordnet.zdict
 python3 tests/dictionary06_format_verify.py
 "$ZIG" cc -target x86_64-linux-musl -O2 -I src -I "$MU/include" tests/search06_probe.c src/render.c \
  "$MU/build/hostmusl-release/libmupdf.a" "$MU/build/hostmusl-release/libmupdf-third.a" -lpthread -lm -static -o out/search-probe
+"$ZIG" cc -target x86_64-linux-musl -O2 -I src -I "$MU/include" tests/scan092_probe.c src/render.c \
+ "$MU/build/hostmusl-release/libmupdf.a" "$MU/build/hostmusl-release/libmupdf-third.a" -lpthread -lm -static -o out/scan092-probe
 out/search-probe

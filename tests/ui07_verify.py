@@ -70,7 +70,7 @@ quit
  assert 'library: 85 books' in log
  assert 'light change: 0=24 simulated' in log and 'light change: 1=17 simulated' in log,log
  assert 'sleep: drawing cover' in log and 'sleep: cover completed' in log and 'sleep: wake; restore GC16' in log,log
- assert json.loads((data/'ui07.json').read_text())==dict(sort=1,power_sleeps=1)
+ assert json.loads((data/'ui07.json').read_text())==dict(sort=1,power_sleeps=1,clean_scans=1)
  assert len(list((data/'thumbs').glob('*.zrt')))>=7
  assert sum(p.stat().st_size for p in (data/'thumbs').glob('*'))<=10*1024*1024
  # Relaunch persists title sort and opt-in, but never restores saved light numbers.
@@ -88,7 +88,7 @@ quit
  (data/'settings.json').write_text('{"full_refresh":4}')
  run(data,books,'wait 200\ntap 180 260\nshot 83_library_progress\nquit\n','ui07-progress')
  assert json.loads((data/'ui07.json').read_text())['sort']==2
- assert json.loads((data/'settings.json').read_text())['full_refresh']==4
+ assert json.loads((data/'settings.json').read_text())==dict(full_refresh=0,refresh_policy=8)
  # Firmware failure turns opt-in back OFF and wakes safely; maintenance remains independent.
  logerr=run(data,books,"wait 100\nevent 1\nwait 200\nevent 16\nwait 200\nquit\n",'ui07-error')
  assert 'sleep: wake; restore GC16' in logerr

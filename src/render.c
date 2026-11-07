@@ -284,10 +284,27 @@ int zr_ink_bbox(zr_doc *z, int page, float *r, int no_images)
 #define IMAGE_GRID_MAX 128
 /* Only this pass-through layer observes image draw operations. Text remains
  * MuPDF's 8-bit antialiasing and is never quantized by a whole-page filter. */
+/* v0.9.2 "Clean up scanned pages". A page counts as scanned only when ALL hold:
+ *  - its FIRST drawing operation is an opaque, axis-aligned raster image,
+ *  - that image covers >= 85% of the page area on screen,
+ *  - everything else drawn on the page is raster too: further images or image
+ *    masks (separated text/background scans); any visible text, vector path,
+ *    shading, soft mask, group or tile disqualifies it (invisible OCR text is fine),
+ *  - the image is paper-dominant: >= 35% of its pixels lie within +-14 levels of
+ *    the most common level, and that level is light (>= 96).
+ * The image is held back (not yet dithered) while it is a candidate. Any later
+ * drawing operation first finishes it exactly as the cleanup-off path would, so
+ * every non-scanned page is byte-identical with the setting on or off.
+ * For a scanned page: levels stretch (92nd percentile -> white, 1st percentile
+ * -> black, gamma 1.25 to keep stroke weight), then the normal 16-level ordered
+ * dithering of image pixels. */
 typedef struct {
     fz_device super;
     unsigned char *out;
-    int w, h, stride, dither, image_count;
+    int w, h, stride, dither, clean, cleaned, image_count, ops, layered, rerender;
+    int depth, nonraster, gseen, gcand; fz_irect grect;
+    double page_area;
+    unsigned char *pend_before; fz_irect pend_r;
     unsigned char cells[IMAGE_GRID_MAX * IMAGE_GRID_MAX];
 } zr_image_device;
 
@@ -303,35 +320,155 @@ static void image_footprint(zr_image_device *d, fz_matrix m, float alpha)
     for (int y=y0; y<y1 && y<IMAGE_GRID_MAX; y++)
         for (int x=x0; x<x1 && x<IMAGE_GRID_MAX; x++) d->cells[y*IMAGE_GRID_MAX+x] = 1;
 }
+static void dither_rect(zr_image_device *d, fz_irect r, const unsigned char *before)
+{
+    static const unsigned char bayer[4][4]={{0,8,2,10},{12,4,14,6},{3,11,1,9},{15,7,13,5}};
+    int rw=r.x1-r.x0;
+    for (int y=r.y0; y<r.y1; y++) {
+        unsigned char *row = d->out + (size_t)y*d->stride;
+        for (int x=r.x0; x<r.x1; x++) {
+            unsigned v=row[x];
+            if (v==before[(size_t)(y-r.y0)*rw+x-r.x0]) continue;
+            unsigned q=v/17, rem=v%17;
+            if (q<15 && rem*16 > bayer[y&3][x&3]*17+8) q++;
+            row[x]=(unsigned char)(q*17);
+        }
+    }
+}
+static int scan_cleanup(unsigned char *out, int stride, fz_irect r, const unsigned char *before)
+{
+    int rw=r.x1-r.x0;
+    unsigned hist[256]={0}; size_t n=0;
+    for (int y=r.y0; y<r.y1; y+=2) {
+        const unsigned char *row=out+(size_t)y*stride;
+        for (int x=r.x0; x<r.x1; x+=2) {
+            if (row[x]==before[(size_t)(y-r.y0)*rw+x-r.x0] && row[x]==255) continue;
+            hist[row[x]]++; n++;
+        }
+    }
+    if (n < 1000) return 0;
+    size_t acc=0; int ink=0, paper=255, mode=0;
+    for (int v=0; v<256; v++) { acc+=hist[v]; if (acc*1000 < n*2) ink=v; if (acc*100 < n*92) paper=v; }
+    for (int v=1; v<256; v++) if (hist[v]>hist[mode]) mode=v;
+    size_t near=0; for (int v=mode-14; v<=mode+14; v++) if (v>=0 && v<256) near+=hist[v];
+    if (near*100 < n*35 || mode < 96) return 0;
+    if (paper < mode) paper = mode;
+    if (ink > mode - 100) ink = mode - 100;  /* sparse text: never treat light grays as ink */
+    if (ink > paper - 64) ink = paper - 64;
+    if (ink < 0) ink = 0;
+    if (paper >= 251 && ink <= 4) return 0; /* already clean black on white */
+    /* Local paper level: 90th percentile per 64x64 tile, bilinear between tile
+     * centres, so uneven yellowing, vignettes and stains all map to white. */
+    enum { TS = 64 };
+    int rh=r.y1-r.y0, gw=(rw+TS-1)/TS, gh=(rh+TS-1)/TS;
+    int floor_bg = mode - 60 > ink + 48 ? mode - 60 : ink + 48;
+    if (gw < 2 || gh < 2) return 0;
+    short *bg=malloc(sizeof(short)*(size_t)gw*gh); int *gx0=malloc(sizeof(int)*(size_t)rw); short *wx=malloc(sizeof(short)*(size_t)rw);
+    if (!bg || !gx0 || !wx) { free(bg); free(gx0); free(wx); return 0; }
+    for (int ty=0; ty<gh; ty++) for (int tx=0; tx<gw; tx++) {
+        unsigned th[256]={0}; unsigned tn=0;
+        int y1=r.y0+(ty+1)*TS < r.y1 ? r.y0+(ty+1)*TS : r.y1, x1=r.x0+(tx+1)*TS < r.x1 ? r.x0+(tx+1)*TS : r.x1;
+        for (int y=r.y0+ty*TS; y<y1; y+=2) { const unsigned char *row=out+(size_t)y*stride; for (int x=r.x0+tx*TS; x<x1; x+=2) { th[row[x]]++; tn++; } }
+        unsigned c=0; int v90=255; for (int v=0; v<256; v++) { c+=th[v]; if (c*10 >= tn*9) { v90=v; break; } }
+        if (v90 < floor_bg) v90 = floor_bg;
+        bg[ty*gw+tx]=(short)(v90-8);       /* headroom: paper grain clips to white */
+    }
+    for (int x=0; x<rw; x++) { int f=(x-TS/2)*256/TS; int g=f<0?0:f>>8; if (g>gw-2) g=gw-2; gx0[x]=g; wx[x]=(short)(f-(g<<8)); }
+    unsigned char lut[1025];
+    for (int i=0; i<=1024; i++) lut[i]=(unsigned char)(powf(i/1024.f,1.25f)*255.f+0.5f);
+    for (int y=r.y0; y<r.y1; y++) {
+        int f=(y-r.y0-TS/2)*256/TS; int g=f<0?0:f>>8; if (g>gh-2) g=gh-2; int wy=f-(g<<8); int g1=g+1;
+        const short *b0=bg+g*gw, *b1=bg+g1*gw;
+        unsigned char *row=out+(size_t)y*stride;
+        const unsigned char *bf = before+(size_t)(y-r.y0)*rw;
+        for (int x=0; x<rw; x++) {
+            unsigned char v=row[r.x0+x];
+            if (v==bf[x]) continue;
+            int c0=gx0[x], c1=c0+1, w=wx[x];
+            int top=b0[c0]*(256-w)+b0[c1]*w, bot=b1[c0]*(256-w)+b1[c1]*w;
+            int pb=(top*(256-wy)+bot*wy)/65536; if (pb>247) pb=247; if (pb<floor_bg-8) pb=floor_bg-8;
+            int den=pb-ink; if (den<16) den=16;
+            int t=(v-ink)*1024/den; if (t<0) t=0; if (t>1024) t=1024;
+            row[r.x0+x]=lut[t];
+        }
+    }
+    free(bg); free(gx0); free(wx);
+    return 1;
+}
+/* Finishes a held-back candidate exactly like the cleanup-off path. */
+static void flush_pending(zr_image_device *d)
+{
+    if (!d->pend_before) return;
+    if (d->dither) dither_rect(d,d->pend_r,d->pend_before);
+    free(d->pend_before); d->pend_before=NULL;
+}
+static void drop_pending(zr_image_device *d){ free(d->pend_before); d->pend_before=NULL; }
+static void finish_page(zr_image_device *d)
+{
+    if (!d->pend_before && d->gcand && !d->nonraster && d->depth == 0) {
+        fz_irect r=d->grect; size_t n=(size_t)(r.x1-r.x0)*(r.y1-r.y0);
+        unsigned char *white=malloc(n);
+        if (white) {
+            memset(white,255,n);
+            if (scan_cleanup(d->out,d->stride,r,white)) { d->cleaned=1; if (d->dither) dither_rect(d,r,white); }
+            free(white);
+        }
+        return;
+    }
+    if (!d->pend_before) return;
+    if (scan_cleanup(d->out,d->stride,d->pend_r,d->pend_before)) { d->cleaned=1; flush_pending(d); return; }
+    if (d->layered) { d->rerender=1; drop_pending(d); return; } /* layers were drawn over an undithered base */
+    flush_pending(d);
+}
+/* A non-raster drawing operation: the page is not a scan. */
+static void note_op(zr_image_device *d)
+{
+    d->nonraster=1;
+    if (d->pend_before && d->layered) { d->rerender=1; drop_pending(d); }
+    else flush_pending(d);
+    d->ops++;
+}
 static void image_fill(fz_context *ctx, fz_device *dev, fz_image *img, fz_matrix m, float alpha, fz_color_params cp)
 {
     zr_image_device *d = (zr_image_device *)dev;
+    if (d->depth > 0) {
+        /* Inside a transparency group the draw device renders into a group
+         * buffer, so nothing is held back here; a raster-only page is finished
+         * after the group has been composited (see finish_page). */
+        d->ops++; image_footprint(d,m,alpha);
+        fz_irect gr = fz_round_rect(fz_intersect_rect(fz_transform_rect(fz_unit_rect,m),fz_make_rect(0,0,d->w,d->h)));
+        if (!d->gseen && d->clean && alpha == 1 && !img->mask && m.b == 0 && m.c == 0 && d->page_area > 0 &&
+            (double)(gr.x1-gr.x0)*(gr.y1-gr.y0) >= 0.85*d->page_area) { d->gcand=1; d->grect=gr; }
+        d->gseen=1;
+        fz_fill_image(ctx,dev->passthrough,img,m,alpha,cp);
+        return;
+    }
+    if (d->pend_before) {
+        /* Further raster layer on a scan candidate (e.g. separated text/background
+         * scans): drawn as-is; the whole page is finished at the end. */
+        d->layered=1; d->ops++; image_footprint(d,m,alpha);
+        fz_fill_image(ctx,dev->passthrough,img,m,alpha,cp);
+        return;
+    }
+    int first = d->ops == 0;
+    d->ops++;
     image_footprint(d,m,alpha);
     fz_irect r = fz_round_rect(fz_intersect_rect(fz_transform_rect(fz_unit_rect,m),fz_make_rect(0,0,d->w,d->h)));
     int rw=r.x1-r.x0, rh=r.y1-r.y0;
+    int simple = alpha == 1 && !img->mask && m.b == 0 && m.c == 0 && rw>0 && rh>0;
+    int candidate = d->clean && simple && first && d->page_area > 0 && (double)rw*rh >= 0.85*d->page_area;
     unsigned char *before=NULL;
     fz_var(before);
     /* Retain the rectangle before this draw. Pixels untouched by this image
      * (including anything excluded by PDF clips) MUST stay unchanged. */
-    if (d->dither && alpha == 1 && !img->mask && m.b == 0 && m.c == 0 && rw>0 && rh>0) {
+    if ((d->dither || candidate) && simple) {
         before=malloc((size_t)rw*rh);
         if (before) for (int y=0; y<rh; y++) memcpy(before+(size_t)y*rw,d->out+(size_t)(r.y0+y)*d->stride+r.x0,rw);
     }
     fz_try(ctx) {
         fz_fill_image(ctx,dev->passthrough,img,m,alpha,cp);
-        if (before) {
-            static const unsigned char bayer[4][4]={{0,8,2,10},{12,4,14,6},{3,11,1,9},{15,7,13,5}};
-            for (int y=r.y0; y<r.y1; y++) {
-                unsigned char *row = d->out + (size_t)y*d->stride;
-                for (int x=r.x0; x<r.x1; x++) {
-                    unsigned v=row[x];
-                    if (v==before[(size_t)(y-r.y0)*rw+x-r.x0]) continue;
-                    unsigned q=v/17, rem=v%17;
-                    if (q<15 && rem*16 > bayer[y&3][x&3]*17+8) q++;
-                    row[x]=(unsigned char)(q*17);
-                }
-            }
-        }
+        if (before && candidate) { d->pend_before=before; d->pend_r=r; before=NULL; }
+        else if (before && d->dither) dither_rect(d,r,before);
     }
     fz_always(ctx) free(before);
     fz_catch(ctx) fz_rethrow(ctx);
@@ -339,9 +476,41 @@ static void image_fill(fz_context *ctx, fz_device *dev, fz_image *img, fz_matrix
 static void image_mask_fill(fz_context *ctx, fz_device *dev, fz_image *img, fz_matrix m,
     fz_colorspace *cs, const float *color, float alpha, fz_color_params cp)
 {
-    image_footprint((zr_image_device *)dev,m,alpha);
+    zr_image_device *d = (zr_image_device *)dev;
+    if (d->pend_before) { d->layered=1; d->ops++; }
+    else if (d->depth > 0) d->ops++;
+    else note_op(d);
+    image_footprint(d,m,alpha);
     fz_fill_image_mask(ctx,dev->passthrough,img,m,cs,color,alpha,cp);
 }
+static void op_fill_path(fz_context *ctx, fz_device *dev, const fz_path *p, int eo, fz_matrix m, fz_colorspace *cs, const float *c, float a, fz_color_params cp)
+{ note_op((zr_image_device *)dev); fz_fill_path(ctx,dev->passthrough,p,eo,m,cs,c,a,cp); }
+static void op_stroke_path(fz_context *ctx, fz_device *dev, const fz_path *p, const fz_stroke_state *st, fz_matrix m, fz_colorspace *cs, const float *c, float a, fz_color_params cp)
+{ note_op((zr_image_device *)dev); fz_stroke_path(ctx,dev->passthrough,p,st,m,cs,c,a,cp); }
+static void op_fill_text(fz_context *ctx, fz_device *dev, const fz_text *t, fz_matrix m, fz_colorspace *cs, const float *c, float a, fz_color_params cp)
+{ note_op((zr_image_device *)dev); fz_fill_text(ctx,dev->passthrough,t,m,cs,c,a,cp); }
+static void op_stroke_text(fz_context *ctx, fz_device *dev, const fz_text *t, const fz_stroke_state *st, fz_matrix m, fz_colorspace *cs, const float *c, float a, fz_color_params cp)
+{ note_op((zr_image_device *)dev); fz_stroke_text(ctx,dev->passthrough,t,st,m,cs,c,a,cp); }
+static void op_fill_shade(fz_context *ctx, fz_device *dev, fz_shade *sh, fz_matrix m, float a, fz_color_params cp)
+{ note_op((zr_image_device *)dev); fz_fill_shade(ctx,dev->passthrough,sh,m,a,cp); }
+static void op_begin_mask(fz_context *ctx, fz_device *dev, fz_rect area, int lum, fz_colorspace *cs, const float *bc, fz_color_params cp)
+{ note_op((zr_image_device *)dev); fz_begin_mask(ctx,dev->passthrough,area,lum,cs,bc,cp); }
+/* A plain group (normal blend, opaque) is neutral; anything else disqualifies the page. */
+static void op_begin_group(fz_context *ctx, fz_device *dev, fz_rect area, fz_colorspace *cs, int iso, int ko, int bm, float a)
+{
+    zr_image_device *d=(zr_image_device *)dev;
+    if (d->pend_before || bm != 0 || a != 1 || d->ops > 0) note_op(d);
+    d->depth++;
+    fz_begin_group(ctx,dev->passthrough,area,cs,iso,ko,bm,a);
+}
+static void op_end_group(fz_context *ctx, fz_device *dev)
+{
+    zr_image_device *d=(zr_image_device *)dev;
+    if (d->depth > 0) d->depth--;
+    fz_end_group(ctx,dev->passthrough);
+}
+static int op_begin_tile(fz_context *ctx, fz_device *dev, fz_rect area, fz_rect view, float xs, float ys, fz_matrix m, int id, int doc_id)
+{ note_op((zr_image_device *)dev); return fz_begin_tile_tid(ctx,dev->passthrough,area,view,xs,ys,m,id,doc_id); }
 
 int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *out, int w, int h, int stride,
     int no_images, int image_dither, zr_render_stats *stats)
@@ -351,7 +520,7 @@ int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *ou
 	fz_device *dev = NULL;
     zr_image_device *images = NULL;
     if (stats) memset(stats,0,sizeof *stats);
-	int rc = 0;
+	int rc = 0, rerender = 0;
 	fz_var(pix);
 	fz_var(dev);
     fz_var(images);
@@ -363,13 +532,22 @@ int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *ou
 		dev = fz_new_draw_device(ctx, fz_identity, pix);
         if (!no_images && (stats || image_dither)) {
             images = fz_new_derived_passthrough_device(ctx,dev,zr_image_device);
-            images->out=out; images->w=w; images->h=h; images->stride=stride; images->dither=image_dither;
+            images->out=out; images->w=w; images->h=h; images->stride=stride; images->dither=image_dither&1; images->clean=(image_dither>>1)&1;
+            if (images->clean) {
+                fz_rect pr=fz_intersect_rect(fz_transform_rect(fz_bound_display_list(ctx,l),m),fz_make_rect(0,0,w,h));
+                images->page_area=fz_is_empty_rect(pr)?0:(double)(pr.x1-pr.x0)*(pr.y1-pr.y0);
+                images->super.fill_path=op_fill_path; images->super.stroke_path=op_stroke_path;
+                images->super.fill_text=op_fill_text; images->super.stroke_text=op_stroke_text;
+                images->super.fill_shade=op_fill_shade; images->super.begin_mask=op_begin_mask;
+                images->super.begin_group=op_begin_group; images->super.end_group=op_end_group; images->super.begin_tile=op_begin_tile;
+            }
             images->super.fill_image=image_fill;
             images->super.fill_image_mask=image_mask_fill;
         }
         maybe_skip_images(dev, no_images);
         fz_device *draw = images ? &images->super : dev;
         fz_run_display_list(ctx, l, draw, m, fz_make_rect(0, 0, w, h), &z->cookie);
+        if (images) { finish_page(images); rerender = images->rerender; }
         fz_close_device(ctx, draw);
         if (stats && images) {
             size_t area=0;
@@ -381,9 +559,11 @@ int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *ou
                     }
             stats->image_coverage=(float)area/((float)w*h);
             stats->image_count=images->image_count;
+            stats->cleaned=images->cleaned;
         }
 	}
 	fz_always(ctx) {
+        if (images) { free(images->pend_before); images->pend_before=NULL; }
         fz_drop_device(ctx, images ? &images->super : NULL);
 		fz_drop_device(ctx, dev);
 		fz_drop_pixmap(ctx, pix);
@@ -392,6 +572,11 @@ int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *ou
 		fz_report_error(ctx);
 		rc = -1;
 	}
+    if (rc == 0 && rerender) {
+        /* Rare: a layered candidate turned out not to be a scan. Render again
+         * exactly as with the setting off so digital pages never change. */
+        return zr_render_with_stats(z,page,m6,out,w,h,stride,no_images,image_dither&1,stats);
+    }
 	return rc;
 }
 

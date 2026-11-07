@@ -66,6 +66,12 @@ sh /mnt/us/zreader/zreader-maintenance.sh clear-cache
 
 Books, notes, reading positions and settings are not affected.
 
+## Clean up scanned pages (0.9.2)
+
+Library → Settings → **Clean up scanned pages: ON/OFF** (ON by default). On scanned books (photographed or scanned paper, often yellowed or sepia) it turns the paper white and the print dark, removing the blotchy gray bands the paper tint otherwise causes on the 16-gray screen.
+
+It only affects scanned pages: a page whose content is one full-page image (optionally with further image layers and invisible OCR text). Any page with real text, vector drawings or a smaller photo or figure — every EPUB and normal digital PDF — is drawn exactly as before, whether the setting is on or off. Turn it off if you prefer the original paper tone of a scan. The setting is remembered; `--no-clean-scans` / `--clean-scans` override it from the command line.
+
 ## Upload books over Wi-Fi (0.9.1)
 
 1. Make sure the Kindle and your phone or computer are on the same Wi-Fi.

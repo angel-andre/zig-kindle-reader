@@ -40,7 +40,7 @@ void zr_ui_text(zr_ui *u, int font, float size, unsigned char *buf, int w, int h
 /* Conservative screen-space union of raster image footprints, collected during
  * the existing draw pass. Image dithering affects opaque, axis-aligned images
  * as they are drawn, not later text/vector operations. */
-typedef struct { float image_coverage; int image_count; } zr_render_stats;
+typedef struct { float image_coverage; int image_count; int cleaned; } zr_render_stats;
 int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *out,
     int w, int h, int stride, int no_images, int image_dither, zr_render_stats *stats);
 

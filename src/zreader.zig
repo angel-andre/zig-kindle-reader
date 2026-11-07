@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.9.1";
+const VERSION = "0.9.2";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 
 // ---------------- C ----------------
@@ -58,7 +58,7 @@ extern fn zr_relayout(z: *ZrDoc, lw: f32, lh: f32, font: f32, margin: f32, page:
 extern fn zr_page_bounds(z: *ZrDoc, page: c_int, r: *[4]f32) c_int;
 extern fn zr_ink_bbox(z: *ZrDoc, page: c_int, r: *[4]f32, no_images: c_int) c_int;
 extern fn zr_render(z: *ZrDoc, page: c_int, m: *const [6]f32, out: [*]u8, w: c_int, h: c_int, stride: c_int, no_images: c_int) c_int;
-const ZrRenderStats = extern struct { image_coverage: f32 = 0, image_count: c_int = 0 };
+const ZrRenderStats = extern struct { image_coverage: f32 = 0, image_count: c_int = 0, cleaned: c_int = 0 };
 extern fn zr_render_with_stats(z: *ZrDoc, page: c_int, m: *const [6]f32, out: [*]u8, w: c_int, h: c_int, stride: c_int, no_images: c_int, image_dither: c_int, stats: *ZrRenderStats) c_int;
 
 extern fn zr_words(z: *ZrDoc, page: c_int, out: [*]ZrWord, max: c_int, text: [*]u8, cap: c_int) c_int;
@@ -430,6 +430,10 @@ const ObjIter = struct {
     }
 };
 
+// bit0: 16-level ordered dithering of images; bit1: v0.9.2 scanned-page cleanup
+fn imageFlags() c_int {
+    return @as(c_int, @intFromBool(opts.image_dither)) | (@as(c_int, @intFromBool(opts.clean_scans)) << 1);
+}
 fn fnv(s: []const u8) u64 {
     var h: u64 = 0xcbf29ce484222325;
     for (s) |c| {
@@ -495,6 +499,8 @@ const Opts = struct {
     log: ?[*:0]const u8 = null,
     idle_min: u64 = 10,
     page_cache_mib: u64 = 20,
+    clean_scans: bool = true,
+    clean_cli: bool = false,
     upload_port: u16 = 8080,
     upload_min_free_mib: u64 = 6144,
     upload_max_mib: u64 = 500,
@@ -1165,7 +1171,7 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
         const geometry = viewGeometry(r, mode, base_width, job.step, pan_x, pan_y);
         const m = geometry.m;
         var render_stats: ZrRenderStats = .{};
-        if (rc == 0) rc = zr_render_with_stats(doc, job.p, &m, slot.buf.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), ni, @intFromBool(opts.image_dither), &render_stats);
+        if (rc == 0) rc = zr_render_with_stats(doc, job.p, &m, slot.buf.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), ni, imageFlags(), &render_stats);
         const metrics = pageMetrics(slot.buf, W, H, STRIDE, render_stats.image_coverage);
         const dt = nowUs() - t0;
 
@@ -1532,8 +1538,8 @@ fn pcName(path: []const u8, out: *[32]u8) [*:0]const u8 {
 }
 fn pcKey(page: i32, view: u8, step: i32, pan_x: f32, pan_y: f32, base_width: bool, trim: bool, font: f32, margin: f32, spacing: f32, a: Anchor) u64 {
     var b: [512]u8 = undefined;
-    const k = std.fmt.bufPrint(&b, "zrpg1|{s}|{d}|{d}|{d}x{d}|d{d}|i{d}|p{d}|v{d}|s{d}|x{d:.9}|y{d:.9}|b{d}|t{d}|f{d:.2}|m{d:.1}|l{d:.2}|a{d}:{d}:{d}:{x}", .{
-        book.pathS(), book.fsize, book.fmtime, W, H, @intFromBool(opts.image_dither), @intFromBool(opts.no_images), page, view, step, pan_x, pan_y, @intFromBool(base_width), @intFromBool(trim), font, margin, spacing, a.chapter, a.start, a.end, a.hash,
+    const k = std.fmt.bufPrint(&b, "zrpg1|{s}|{d}|{d}|{d}x{d}|d{d}|c{d}|i{d}|p{d}|v{d}|s{d}|x{d:.9}|y{d:.9}|b{d}|t{d}|f{d:.2}|m{d:.1}|l{d:.2}|a{d}:{d}:{d}:{x}", .{
+        book.pathS(), book.fsize, book.fmtime, W, H, @intFromBool(opts.image_dither), @intFromBool(opts.clean_scans), @intFromBool(opts.no_images), page, view, step, pan_x, pan_y, @intFromBool(base_width), @intFromBool(trim), font, margin, spacing, a.chapter, a.start, a.end, a.hash,
     }) catch return 0;
     return fnv(k);
 }
@@ -1649,7 +1655,7 @@ fn renderFirstRaster(doc: *ZrDoc) void {
     slot.geometry = viewGeometry(r, pool.view, pool.base_width, pool.step, pool.pan_x, pool.pan_y);
     slot.m = slot.geometry.m;
     var rs: ZrRenderStats = .{};
-    const rendered = rc == 0 and zr_render_with_stats(doc, pool.cur, &slot.m, slot.buf.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), ni, @intFromBool(opts.image_dither), &rs) == 0;
+    const rendered = rc == 0 and zr_render_with_stats(doc, pool.cur, &slot.m, slot.buf.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), ni, imageFlags(), &rs) == 0;
     slot.page = pool.cur; slot.step = pool.step; slot.gen = pool.gen;
     slot.state = if (rendered) .ready else .failed;
     slot.metrics = pageMetrics(slot.buf, W, H, STRIDE, rs.image_coverage);
@@ -1833,7 +1839,7 @@ fn ui07Path(out: []u8) [:0]u8 {
 fn saveUi07() void {
     var path: [1200]u8 = undefined;
     var buf: [120]u8 = undefined;
-    const data = std.fmt.bufPrint(&buf, "{{\"sort\":{d},\"power_sleeps\":{d}}}\n", .{ lib_sort, @intFromBool(power_sleeps) }) catch return;
+    const data = std.fmt.bufPrint(&buf, "{{\"sort\":{d},\"power_sleeps\":{d},\"clean_scans\":{d}}}\n", .{ lib_sort, @intFromBool(power_sleeps), @intFromBool(opts.clean_scans) }) catch return;
     if (!writeFileAtomic(ui07Path(&path), data)) toast("Could not save library/sleep settings", .{});
 }
 fn init07() void {
@@ -1844,6 +1850,7 @@ fn init07() void {
             if (v >= 0 and v <= 2) lib_sort = @intFromFloat(v);
         }
         power_sleeps = (jsonNum(data, "power_sleeps") orelse 0) == 1;
+        if (!opts.clean_cli) opts.clean_scans = (jsonNum(data, "clean_scans") orelse 1) != 0;
     }
     const root = std.fmt.bufPrintSentinel(&path, "{s}", .{opts.data}, 0) catch return;
     zr_layout_cache(root);
@@ -1955,11 +1962,15 @@ fn drawDevice() void {
     text(SANS, 28, 70, 1300, "Opt-in / experimental: test wake with SSH available.", 0x55);
     text(SANS, 28, 70, 1350, "OFF keeps the original power-button exit behavior.", 0x55);
     button(uploadButton(), "Upload books over Wi-Fi", false);
+    button(cleanButton(), if (opts.clean_scans) "Clean up scanned pages: ON" else "Clean up scanned pages: OFF", opts.clean_scans);
     drawToast();
 }
 // ---- v0.9.1 Wi-Fi book upload (server lives only while this screen is open) ----
 fn uploadButton() Rect {
     return .{ .x = 70, .y = 1430, .w = @as(i32, @intCast(W)) - 140, .h = 110 };
+}
+fn cleanButton() Rect {
+    return .{ .x = 70, .y = 1565, .w = @as(i32, @intCast(W)) - 140, .h = 110 };
 }
 fn uploadStatusRect() Rect {
     return .{ .x = 0, .y = 1000, .w = @intCast(W), .h = 260 };
@@ -2033,6 +2044,19 @@ fn configureSleep(on: bool) bool {
 fn deviceTap(x: i32, y: i32) void {
     if (topButton(true).contains(x, y)) return showScreen(device_return);
     if (uploadButton().contains(x, y)) return showScreen(.upload);
+    if (cleanButton().contains(x, y)) {
+        opts.clean_scans = !opts.clean_scans;
+        saveUi07();
+        if (book.open) {
+            _ = pthread_mutex_lock(&pool.mtx);
+            pool.gen +%= 1;
+            pool.shown = -1;
+            _ = pthread_cond_broadcast(&pool.cond);
+            _ = pthread_mutex_unlock(&pool.mtx);
+        }
+        logf("clean up scanned pages: {s}", .{if (opts.clean_scans) "on" else "off"});
+        return markFull(WF_REAGL);
+    }
     for (0..2) |i| {
         if (light_values[i] >= 0 and lightButton(i, false).contains(x, y)) return changeLight(i, light_values[i] - 1);
         if (light_values[i] >= 0 and lightButton(i, true).contains(x, y)) return changeLight(i, light_values[i] + 1);
@@ -3915,7 +3939,7 @@ fn auditRefresh() !u8 {
         const m = fitMatrix(r);
         var rs: ZrRenderStats = .{};
         const start = nowUs();
-        if (zr_render_with_stats(doc, page, &m, pixels.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), ni, @intFromBool(opts.image_dither), &rs) != 0) return 1;
+        if (zr_render_with_stats(doc, page, &m, pixels.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), ni, imageFlags(), &rs) != 0) return 1;
         t_render += nowUs() - start;
         const mt = nowUs();
         const next = pageMetrics(pixels, W, H, STRIDE, rs.image_coverage);
@@ -3958,6 +3982,7 @@ fn usage() void {
         \\  --wf reagl|gl16    page-turn waveform (default reagl; gl16 is for testing)
         \\  --full-refresh off|4|8|16 periodic clean (default off)
         \\  --no-image-dither  disable image-only 16-level dithering
+        \\  --no-clean-scans   do not clean up scanned pages (default: on, Settings)
         \\  --audit-refresh    offline refresh CSV; no device access
         \\  --no-images        experimental: skip drawing images
         \\  --debug            timing line in the menu
@@ -3985,6 +4010,9 @@ fn parseArgs(argv: []const [*:0]const u8) bool {
             opts.wf = if (eql(v, "gl16")) WF_GL16 else if (eql(v, "reagl")) WF_REAGL else return false;
         } else if (eql(a, "--audit-refresh")) {
             opts.audit_refresh = true;
+        } else if (eql(a, "--no-clean-scans") or eql(a, "--clean-scans")) {
+            opts.clean_scans = eql(a, "--clean-scans");
+            opts.clean_cli = true;
         } else if (eql(a, "--no-image-dither")) {
             opts.image_dither = false;
         } else if (eql(a, "--full-refresh") and has_next) {
