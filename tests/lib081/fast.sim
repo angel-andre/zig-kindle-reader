@@ -1,0 +1,8 @@
+wait 50
+tap 1052 1606
+wait 80
+tap 1052 1606
+wait 4000
+tap 1052 1606
+wait 4000
+quit

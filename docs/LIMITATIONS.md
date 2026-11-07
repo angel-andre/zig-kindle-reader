@@ -11,5 +11,5 @@
 - Hardware dark mode is preserved but not simulated in screenshots. GC16 policy checks do not prove absence of physical ghosting.
 - Malformed calibre PDF drop-cap overlap also occurs in independent MuPDF/Poppler renders. No layout repair was fabricated.
 - Whether firmware honours DISABLE_CORE_DUMP may vary. Removing old dumps does not prevent new crashes.
-- The KOReader benchmark has not been run yet; results will be added to the README.
+- The KOReader benchmark covers one device and two books, and measures framebuffer change, not physical e-ink completion.
 - Some regression tests need your own book copies in `testbooks/`.

@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.8.0";
+const VERSION = "0.8.1";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 
 // ---------------- C ----------------
@@ -27,6 +27,8 @@ extern fn zr_battery() c_int;
 extern fn zr_file_size(path: [*:0]const u8) u64;
 extern fn zr_storage(path: [*:0]const u8, free: *u64, total: *u64) c_int;
 extern fn zr_thumbs_focus() void;
+extern fn zr_thumbs_revalidate() void;
+extern fn zr_thumb_peek(path: [*:0]const u8) c_int;
 extern fn zr_cancel(z: *ZrDoc) void;
 extern fn zr_reset_cancel(z: *ZrDoc) void;
 extern fn zr_close(z: *ZrDoc) void;
@@ -1911,7 +1913,7 @@ fn tick07() void {
     const rev = zr_thumb_revision();
     if (rev != thumb_revision) {
         thumb_revision = rev;
-        if (screen == .library and sleep_phase == .awake) markFull(WF_REAGL);
+        if (screen == .library and sleep_phase == .awake) libCoversArrived();
     }
     var a: c_int = -1;
     var b: c_int = -1;
@@ -2023,6 +2025,7 @@ fn scanLibrary() void {
     for (lib[0..nlib]) |e| alloc.free(e.path);
     nlib = 0;
     last_cover_page = std.math.maxInt(usize);
+    zr_thumbs_revalidate();
     books_bytes = 0;
     _ = zr_storage("/mnt/us", &storage_free, &storage_total);
     scanDir(opts.books, 0);
@@ -2604,15 +2607,175 @@ fn rowSep(r: Rect) void {
     fill(.{ .x = r.x, .y = r.y + r.h - 2, .w = r.w, .h = 2 }, 0xC0);
 }
 
+// ---- v0.8.1 library update batching ----
+// A library page change produces one composed update. Cached covers are read
+// (off the UI thread) during a short hold before the first draw; covers that
+// must be generated are merged into at most two non-flashing GL16 updates
+// limited to the thumbnail column. Battery and storage are composed into the
+// same raster and never cause their own update.
+const LIB_HOLD_US: u64 = 300_000;
+const LIB_BATCH1_US: u64 = 1_500_000;
+var lib_hold = false;
+var lib_hold_until: u64 = 0;
+var lib_hold_mode: u32 = WF_REAGL;
+var lib_drawn_at: u64 = 0;
+var lib_batches: u32 = 0;
+var lib_shown: [16]bool = @splat(false);
+var lib_pending: [16]bool = @splat(false);
+fn thumbRect(i: usize) Rect {
+    const r = rowRect(i);
+    return .{ .x = r.x, .y = r.y + 8, .w = 96, .h = 128 };
+}
+fn libPath(k: usize, z: *[1200]u8) ?[*:0]const u8 {
+    const p = std.fmt.bufPrintSentinel(z, "{s}", .{lib[lib_visible[k]].path}, 0) catch return null;
+    return p.ptr;
+}
+fn libFocus() void {
+    if (last_cover_page != list_page or last_cover_sort != lib_sort or last_cover_folder != folder_filter) {
+        zr_thumbs_focus(); last_cover_page = list_page; last_cover_sort = lib_sort; last_cover_folder = folder_filter;
+    }
+}
+// Visible rows first (oldest request = served first), then next and previous
+// pages so a later page change is a single cached update.
+fn libRequestThumbs() void {
+    if (folder_picker) return;
+    const per = rowsPerPage();
+    const total = libraryCount();
+    var scratch: [96 * 128]u8 = undefined;
+    var z: [1200]u8 = undefined;
+    const pages = [_]i64{ @intCast(list_page), @as(i64, @intCast(list_page)) + 1, @as(i64, @intCast(list_page)) - 1 };
+    for (pages) |pg| {
+        if (pg < 0) continue;
+        for (0..per) |i| {
+            const k = @as(usize, @intCast(pg)) * per + i;
+            if (k >= total) break;
+            if (libPath(k, &z)) |p| _ = zr_thumb(p, &scratch);
+        }
+    }
+}
+fn libVisibleState(reading: *usize, generating: *usize) void {
+    reading.* = 0;
+    generating.* = 0;
+    if (folder_picker) return;
+    const per = rowsPerPage();
+    var z: [1200]u8 = undefined;
+    for (0..per) |i| {
+        const k = list_page * per + i;
+        if (k >= libraryCount()) break;
+        const p = libPath(k, &z) orelse continue;
+        switch (zr_thumb_peek(p)) {
+            1, 0 => reading.* += 1,
+            2 => generating.* += 1,
+            else => {},
+        }
+    }
+}
+fn libPageChange(mode: u32) void {
+    if (screen == .library) logf("library page: {d}", .{list_page + 1});
+    libFocus();
+    libRequestThumbs();
+    lib_hold = true;
+    lib_hold_mode = mode;
+    lib_hold_until = nowUs() + LIB_HOLD_US;
+    lib_batches = 0;
+    lib_shown = @splat(false);
+    lib_pending = @splat(false);
+    libTick();
+}
+// Called every loop iteration and on cover revisions.
+fn libTick() void {
+    if (screen != .library or sleep_phase != .awake) return;
+    if (lib_hold) {
+        var reading: usize = 0;
+        var generating: usize = 0;
+        libVisibleState(&reading, &generating);
+        if (reading > 0 and nowUs() < lib_hold_until) return;
+        lib_hold = false;
+        lib_drawn_at = nowUs();
+        const per = @min(rowsPerPage(), lib_shown.len);
+        var z: [1200]u8 = undefined;
+        for (0..per) |i| {
+            const k = list_page * per + i;
+            lib_shown[i] = true;
+            lib_pending[i] = false;
+            if (folder_picker or k >= libraryCount()) continue;
+            const p = libPath(k, &z) orelse continue;
+            const st = zr_thumb_peek(p);
+            lib_shown[i] = st == 3 or st == 4;
+            lib_pending[i] = !lib_shown[i];
+        }
+        logf("library compose: one update; covers pending={d}", .{reading + generating});
+        markFull(lib_hold_mode);
+        return;
+    }
+    libFlushCovers(false);
+}
+fn libCoversArrived() void {
+    if (lib_hold) return libTick();
+    libFlushCovers(true);
+}
+fn libFlushCovers(_: bool) void {
+    if (lib_batches >= 2) return;
+    const per = @min(rowsPerPage(), lib_shown.len);
+    var z: [1200]u8 = undefined;
+    var ready = Rect{};
+    var still: usize = 0;
+    var ready_rows: [16]bool = @splat(false);
+    for (0..per) |i| {
+        if (!lib_pending[i]) continue;
+        const k = list_page * per + i;
+        if (folder_picker or k >= libraryCount()) {
+            lib_pending[i] = false;
+            continue;
+        }
+        const p = libPath(k, &z) orelse continue;
+        switch (zr_thumb_peek(p)) {
+            3 => {
+                ready_rows[i] = true;
+                ready = Rect.unite(ready, thumbRect(i).grow(2));
+            },
+            4 => lib_pending[i] = false,
+            0 => {
+                // Request was evicted/cancelled: ask again, keep waiting.
+                var scratch: [96 * 128]u8 = undefined;
+                _ = zr_thumb(p, &scratch);
+                still += 1;
+            },
+            else => still += 1,
+        }
+    }
+    if (ready.empty()) return;
+    // Batch 1 waits for every pending cover or 1.5 s; batch 2 (the last) waits
+    // for every remaining cover. Never one update per cover, never a flash.
+    const last = lib_batches == 1;
+    if (still > 0 and (last or nowUs() < lib_drawn_at + LIB_BATCH1_US)) return;
+    for (0..per) |i| if (ready_rows[i]) {
+        lib_pending[i] = false;
+        lib_shown[i] = true;
+    };
+    lib_batches += 1;
+    logf("library covers: batch {d} GL16 partial {d}x{d}", .{ lib_batches, ready.w, ready.h });
+    markDirty(ready, WF_GL16);
+}
+fn formatBookCount(buf: []u8, shown: usize, all: usize, filtered: bool) []const u8 {
+    if (filtered and shown != all) return std.fmt.bufPrint(buf, "{d} of {d} {s}", .{ shown, all, if (all == 1) "book" else "books" }) catch "";
+    return std.fmt.bufPrint(buf, "{d} {s}", .{ all, if (all == 1) "book" else "books" }) catch "";
+}
+fn libraryFooter(line: []u8) []const u8 {
+    var a: [32]u8 = undefined; var b: [32]u8 = undefined; var c: [32]u8 = undefined; var n: [48]u8 = undefined;
+    const count = formatBookCount(&n, nvisible, nlib, folder_filter != 0);
+    return if (storage_total > 0)
+        std.fmt.bufPrint(line, "{s}  \xc2\xb7  Books {s}  \xc2\xb7  {s} free / {s}", .{ count, formatBytes(books_bytes, &c), formatBytes(storage_free, &a), formatBytes(storage_total, &b) }) catch ""
+    else
+        std.fmt.bufPrint(line, "{s}  \xc2\xb7  Books {s}  \xc2\xb7  Device storage unavailable", .{ count, formatBytes(books_bytes, &c) }) catch "";
+}
 var last_cover_page: usize = std.math.maxInt(usize);
 var last_cover_sort: usize = 255;
 var last_cover_folder: usize = std.math.maxInt(usize);
 fn drawLibrary() void {
     header(if (folder_picker) "Folders" else "Library", book.open);
     drawBattery();
-    if (last_cover_page != list_page or last_cover_sort != lib_sort or last_cover_folder != folder_filter) {
-        zr_thumbs_focus(); last_cover_page = list_page; last_cover_sort = lib_sort; last_cover_folder = folder_filter;
-    }
+    libFocus();
     button(libraryControl(0), SORT_NAMES[lib_sort], false);
     var label: [1100]u8 = undefined;
     button(libraryControl(1), std.fmt.bufPrint(&label, "Folder: {s}", .{if (folder_filter == 0) "All" else folders[folder_filter - 1]}) catch "Folders", folder_picker);
@@ -2646,21 +2809,8 @@ fn drawLibrary() void {
         }
         rowSep(r);
     }
-    // Next page requests are lower priority than visible rows. Cache reads run
-    // independently, so even a twelve-second uncached book cannot delay a hit.
-    if (!folder_picker) {
-        for (0..per) |i| {
-            const k = (list_page + 1) * per + i;
-            if (k >= total) break;
-            var z: [1200]u8 = undefined;
-            const path = std.fmt.bufPrintSentinel(&z, "{s}", .{lib[lib_visible[k]].path}, 0) catch continue;
-            var scratch: [96 * 128]u8 = undefined;
-            _ = zr_thumb(path, &scratch);
-        }
-    }
-    var a: [32]u8 = undefined; var b: [32]u8 = undefined; var c: [32]u8 = undefined; var line: [180]u8 = undefined;
-    const storage = if (storage_total > 0) std.fmt.bufPrint(&line, "{s} free / {s}  \xc2\xb7  Books {s}", .{formatBytes(storage_free, &a), formatBytes(storage_total, &b), formatBytes(books_bytes, &c)}) catch "" else std.fmt.bufPrint(&line, "Device storage unavailable  \xc2\xb7  Books {s}", .{formatBytes(books_bytes, &c)}) catch "";
-    text(SANS, 26, 70, @floatFromInt(@as(i32, @intCast(H)) - 180), storage, 0x33);
+    var line: [200]u8 = undefined;
+    text(SANS, 26, 70, @floatFromInt(@as(i32, @intCast(H)) - 180), libraryFooter(&line), 0x33);
     pager(total);
     drawToast();
 }
@@ -2817,7 +2967,7 @@ fn showScreen(s: Screen) void {
         first_clean = true;
         need_page = true;
         tap_pending_measure = false;
-    } else markFull(WF_REAGL);
+    } else if (s == .library) libPageChange(WF_REAGL) else markFull(WF_REAGL);
 }
 
 fn openFromLibrary(i: usize) void {
@@ -2831,12 +2981,12 @@ fn openFromLibrary(i: usize) void {
 fn listNav(x: i32, y: i32) bool {
     if (pagerPrev().contains(x, y) and list_page > 0) {
         list_page -= 1;
-        markFull(WF_REAGL);
+        if (screen == .library) libPageChange(WF_REAGL) else markFull(WF_REAGL);
         return true;
     }
     if (pagerNext().contains(x, y)) {
         list_page += 1;
-        markFull(WF_REAGL);
+        if (screen == .library) libPageChange(WF_REAGL) else markFull(WF_REAGL);
         return true;
     }
     return false;
@@ -2867,13 +3017,13 @@ fn onTap(x: i32, y: i32, t_ev: u64) void {
                 saveUi07();
                 sortLibrary();
                 list_page = 0;
-                markFull(WF_REAGL);
+                libPageChange(WF_REAGL);
                 return;
             }
             if (libraryControl(1).contains(x, y)) {
                 folder_picker = !folder_picker;
                 list_page = 0;
-                markFull(WF_REAGL);
+                libPageChange(WF_REAGL);
                 return;
             }
             if (libraryControl(2).contains(x, y)) return openDevice();
@@ -2887,7 +3037,7 @@ fn onTap(x: i32, y: i32, t_ev: u64) void {
                     folder_picker = false;
                     filterLibrary();
                     list_page = 0;
-                    markFull(WF_REAGL);
+                    libPageChange(WF_REAGL);
                     return;
                 }
                 return openFromLibrary(lib_visible[k]);
@@ -3749,8 +3899,8 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
         if (openBook(std.mem.span(b))) {
             screen = .reader;
             need_page = true;
-        } else markFull(WF_GC16);
-    } else markFull(WF_GC16);
+        } else libPageChange(WF_GC16);
+    } else libPageChange(WF_GC16);
     if (opts.sim != null) _ = spawn(&sim_th, simThread);
 
     var pfds: [4]linux.pollfd = undefined;
@@ -3776,6 +3926,7 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
 
     main_loop: while (!@atomicLoad(bool, &g_quit, .seq_cst) and !quit_requested) {
         tick07();
+        libTick();
         if (sleep_phase != .awake) last_input = nowUs();
         if (sleep_phase == .awake) searchStep();
         pump();
@@ -3790,6 +3941,7 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
         if (gs.down and !gs.long_fired) timeout = 40;
         if (center_pending) timeout = @min(timeout, 20);
         if (toast_len > 0) timeout = @min(timeout, 200);
+        if (lib_hold) timeout = @min(timeout, 15);
         _ = linux.poll(&pfds, nfds, timeout);
         const now = nowUs();
         checkLongPress();
@@ -4804,4 +4956,52 @@ test "v08 library layout storage and battery screenshot (illustrative values)" {
     image.print("P5 {d} {d} 255\n", .{ W, H }); image.put(fb);
     try std.testing.expect(writeFileAtomic("shots/86_library_storage_battery_mock.pgm", image.slice()));
     nlib = 0; nvisible = 0; opts.sim = null;
+}
+
+test "v081 library book count formatting" {
+    var b: [48]u8 = undefined;
+    try std.testing.expectEqualStrings("85 books", formatBookCount(&b, 85, 85, false));
+    try std.testing.expectEqualStrings("1 book", formatBookCount(&b, 1, 1, false));
+    try std.testing.expectEqualStrings("0 books", formatBookCount(&b, 0, 0, false));
+    try std.testing.expectEqualStrings("12 of 85 books", formatBookCount(&b, 12, 85, true));
+    try std.testing.expectEqualStrings("85 books", formatBookCount(&b, 85, 85, true));
+    nlib = 85; nvisible = 85; folder_filter = 0;
+    storage_free = 9878424781; storage_total = 12348030976; books_bytes = 1717986918;
+    var line: [200]u8 = undefined;
+    try std.testing.expectEqualStrings("85 books  \xc2\xb7  Books 1.6 GiB  \xc2\xb7  9.2 GiB free / 11.5 GiB", libraryFooter(&line));
+    folders[0] = "Reference"; nfolders = 1; folder_filter = 1; nvisible = 12;
+    try std.testing.expectEqualStrings("12 of 85 books  \xc2\xb7  Books 1.6 GiB  \xc2\xb7  9.2 GiB free / 11.5 GiB", libraryFooter(&line));
+    storage_total = 0;
+    try std.testing.expectEqualStrings("12 of 85 books  \xc2\xb7  Books 1.6 GiB  \xc2\xb7  Device storage unavailable", libraryFooter(&line));
+    nlib = 0; nvisible = 0; nfolders = 0; folder_filter = 0; storage_total = 0;
+}
+
+test "v081 library bottom line screenshot with book count (illustrative values)" {
+    fb = try alloc.alloc(u8, @as(usize, STRIDE) * H);
+    defer alloc.free(fb);
+    ui = zr_ui_new(sans_font.ptr, @intCast(sans_font.len)) orelse return error.UI;
+    opts.sim = "preview";
+    book.open = false; screen = .library; list_page = 0; toast_len = 0;
+    folder_picker = false; lib_sort = 1;
+    storage_free = 9878424781; storage_total = 12348030976; books_bytes = 1717986918;
+    const names = [_][]const u8{ "A field guide to the night sky", "Notes from the quiet valley", "Collected stories", "The art of careful observation", "A practical programming companion", "A short history of discovery", "Patterns in nature" };
+    for (names, 0..) |name, i| {
+        lib[i] = .{ .path = @constCast("preview.pdf"), .title = name, .folder = "Reference", .opened = 0, .progress = if (i < 3) @intCast(15 + i * 23) else -1, .bytes = (i + 1) * 1536000, .epub = i % 2 != 0 };
+        lib_visible[i] = i;
+    }
+    // 85 books in total (only the first page has rows); second shot filters a folder of 12.
+    const variants = [_]struct { filter: usize, visible: usize, name: []const u8 }{
+        .{ .filter = 0, .visible = 85, .name = "shots/90_library_book_count_mock.pgm" },
+        .{ .filter = 1, .visible = 12, .name = "shots/91_library_folder_count_mock.pgm" },
+    };
+    folders[0] = "Reference"; nfolders = 1;
+    for (variants) |v| {
+        nlib = 85; nvisible = v.visible; folder_filter = v.filter;
+        @memset(fb, 255);
+        drawLibrary();
+        var image = Buf.init(fb.len + 64); defer image.deinit();
+        image.print("P5 {d} {d} 255\n", .{ W, H }); image.put(fb);
+        try std.testing.expect(writeFileAtomic(v.name, image.slice()));
+    }
+    nlib = 0; nvisible = 0; nfolders = 0; folder_filter = 0; opts.sim = null; storage_total = 0;
 }

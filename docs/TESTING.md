@@ -11,7 +11,7 @@ The reports in `tests/` were produced on a development computer for each version
 | REPORT06 | 21 Zig units; 54 EPUB typography combinations; dictionary including malformed inputs; PDF views, search, exports, marker-helper sandboxes; previous regressions retained |
 | REPORT07 | 24 Zig units; library covers/folders/sorts, bounded cache/worker behavior, light startup/no-write and mocked failure/debounce; simulated sleep/wake/restore and generated 85-book library |
 
-The 175 MiB synthetic sparse PDF tests large offsets, **not** real 175 MiB scanned-image complexity. The KOReader benchmark is described in the README.
+The 175 MiB synthetic sparse PDF tests large offsets, **not** real 175 MiB scanned-image complexity. The KOReader benchmark is in docs/BENCHMARK.md.
 
 ## Prerequisites and commands
 

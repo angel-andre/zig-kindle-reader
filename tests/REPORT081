@@ -1,0 +1,54 @@
+ZREADER 0.8.1 — LOCAL BUILD / TEST REPORT
+ARM static arm-linux-musleabihf / cortex_a53; MuPDF 1.28.6. Pause list unchanged:
+awesome volumd blanket Xorg. Hardware dark mode untouched.
+
+LIBRARY FLICKER — ROOT CAUSE
+1. Every cover-cache revision (each disk read or generated cover) called
+   markFull(REAGL): a separate full-screen update per arriving cover.
+2. zr_thumbs_focus() demoted every READY RAM cover to "re-read from disk" on each
+   page change, so even fully cached pages drew placeholders first, then
+   repainted the whole screen again when the re-reads landed. It also discarded
+   the next-page prefetch results.
+3. The page was drawn immediately, before any cache read could finish.
+4. zr_thumb() used trylock; a worker briefly holding the lock produced a
+   spurious placeholder for a cached cover.
+
+UPDATES PER LIBRARY PAGE CHANGE (host simulator, production pump; panel
+completion is instant in the simulator, so the device can coalesce some)
+                         v0.8.0 (instrumented)          v0.8.1
+cached pages             2 full-screen REAGL            1 full-screen REAGL
+cold, prefetch had time  3-4 full-screen REAGL          1 full-screen REAGL
+cold, rapid taps         4-6 full-screen REAGL          1 REAGL + <=1 GL16 partial
+                                                        (100x282 thumbnail column)
+first page after a cold start: 1 GC16 launch clean + 1 GL16 partial 100x1032.
+No library page change uses GC16. Logs: tests/lib081/{before,after}-*.log and
+tests/lib081-*.log.
+
+FIX
+- Ready covers stay ready across page changes; identity re-validation only on
+  library rescan (off UI thread).
+- Page change: request visible covers, then next and previous page (prefetch),
+  hold up to 300 ms while disk reads finish, then ONE composed update.
+- Covers still being generated: at most two batched GL16 PARTIAL updates limited
+  to the union of thumbnail rectangles (batch 1 after all pending or 1.5 s,
+  batch 2 when the rest finish). Never one update per cover.
+- Blocking cover-cache lock (workers never hold it during I/O).
+- Battery/storage are composed into the same raster; no separate updates.
+- REAGL keeps the driver FULL update flag (as reader page turns do since v0.8);
+  it is the non-flashing waveform, not a GC16 flash.
+
+BOOK COUNT
+Footer: "85 books · Books 1.6 GiB · 9.2 GiB free / 11.5 GiB";
+folder filter: "12 of 85 books · ...". Previews (mock data):
+shots/90_library_book_count_mock*.png, shots/91_library_folder_count_mock*.png.
+
+TESTS
+All 29 Zig unit tests pass (new: book-count/footer formatting, footer shots).
+All previous suites pass plus lib081_verify (cached = exactly 1 update per page
+change, no GC16; uncached <= 2 batched GL16 partial thumbnail-column updates).
+Full log: tests/run081-results.txt.
+
+UNVERIFIED
+Real panel timing/look of REAGL and GL16 partial on the device; whether a
+300 ms hold suffices for device cache reads (else at most one batch follows);
+real cover generation time on the Kindle (box ~80 ms/cover, device likely 6x).

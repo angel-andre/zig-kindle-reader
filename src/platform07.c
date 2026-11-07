@@ -127,9 +127,18 @@ static void *thumb_worker(void *arg){(void)arg;nice(10);int fd=cachefd();if(fd>=
 }
 void zr_thumbs_init(const char *data){snprintf(cachedir,sizeof cachedir,"%s/thumbs",data);mkdir(cachedir,0700);int fd=cachefd();if(fd<0)return;close(fd);pthread_t t;pthread_attr_t a;pthread_attr_init(&a);pthread_attr_setstacksize(&a,512*1024);if(!pthread_create(&t,&a,thumb_worker,0)){pthread_detach(t);if(!pthread_create(&t,&a,thumb_disk_worker,0)){pthread_detach(t);thumb_started=1;}}pthread_attr_destroy(&a);}
 /* Cancel stale queued misses on page change; a single active child stays bounded. */
-void zr_thumbs_focus(void){pthread_mutex_lock(&tm);for(int i=0;i<TN;i++)if(ts[i].status==1||ts[i].status==5)ts[i].status=0;else if(ts[i].status==3)ts[i].status=1;pthread_mutex_unlock(&tm);}
+/* v0.8.1: ready RAM covers stay ready across page changes. Demoting them to a
+ * disk re-read made every cached cover arrive late and trigger its own redraw. */
+void zr_thumbs_focus(void){pthread_mutex_lock(&tm);for(int i=0;i<TN;i++)if(ts[i].status==1||ts[i].status==5)ts[i].status=0;pthread_mutex_unlock(&tm);}
+/* Library rescan only: re-check identity (size/mtime) of RAM covers off the UI thread. */
+void zr_thumbs_revalidate(void){pthread_mutex_lock(&tm);for(int i=0;i<TN;i++)if(ts[i].status==3)ts[i].status=1;pthread_cond_broadcast(&tc);pthread_mutex_unlock(&tm);}
+/* 3 ready, 1 disk read pending, 2 generation pending, 4 failed, 0 unknown. Never queues. */
+int zr_thumb_peek(const char *path){if(!thumb_started||strlen(path)>=1100)return 4;uint64_t h=hashbytes(14695981039346656037ULL,path,strlen(path));int r=0;pthread_mutex_lock(&tm);
+ for(int i=0;i<TN;i++)if(ts[i].status&&ts[i].key==h&&!strcmp(ts[i].path,path)){int st=ts[i].status;r=st==3?3:st==4?4:(st==1||st==6)?1:2;break;}pthread_mutex_unlock(&tm);return r;}
 /* UI never reads disk, renders, waits for a mutex or a child. Bounded 32-entry RAM LRU. */
-int zr_thumb(const char *path,unsigned char *pixels){if(!thumb_started||strlen(path)>=1100||pthread_mutex_trylock(&tm))return 0;uint64_t h=hashbytes(14695981039346656037ULL,path,strlen(path));int k=-1,empty=-1;uint64_t age=UINT64_MAX;
+/* Workers hold tm only for short memcpy/bookkeeping, never during I/O; a blocking
+ * lock avoids a spurious placeholder (and a later extra update) for a cached cover. */
+int zr_thumb(const char *path,unsigned char *pixels){if(!thumb_started||strlen(path)>=1100)return 0;pthread_mutex_lock(&tm);uint64_t h=hashbytes(14695981039346656037ULL,path,strlen(path));int k=-1,empty=-1;uint64_t age=UINT64_MAX;
  for(int i=0;i<TN;i++){if(ts[i].status&&ts[i].key==h&&!strcmp(ts[i].path,path)){k=i;break;}if(ts[i].status!=1&&ts[i].status!=2&&ts[i].status!=5&&ts[i].status!=6&&ts[i].age<age){empty=i;age=ts[i].age;}}
  int ready=0;if(k>=0){ts[k].age=++tick;if(ts[k].status==3){memcpy(pixels,ts[k].pix,TB);ready=1;}}
  else if(empty>=0){k=empty;strcpy(ts[k].path,path);ts[k].key=h;ts[k].age=++tick;ts[k].status=1;pthread_cond_broadcast(&tc);}pthread_mutex_unlock(&tm);return ready;}

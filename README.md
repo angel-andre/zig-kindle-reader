@@ -2,7 +2,7 @@
 
 A small, standalone PDF/EPUB reader written in Zig and C for a jailbroken **Kindle Paperwhite 12th generation (PW6)**. The executable is `zreader`; KUAL calls it “Zig reader”. These names refer to the same application.
 
-**Version: 0.8.0 · tested device family: PW6 only · other Kindles: untested.**
+**Version: 0.8.1 · tested device family: PW6 only · other Kindles: untested.**
 
 This project is not replacement firmware. It temporarily pauses the stock interface while reading and restores it on exit. It does not remove Amazon's operating system, alter system partitions, or replace the jailbreak.
 
@@ -21,7 +21,7 @@ KOReader is a feature-rich reader, and it made SSH access to the Kindle easy. On
 5. [Recovery and troubleshooting](docs/TROUBLESHOOTING.md)
 6. [Uninstall and rollback](docs/UNINSTALL.md)
 
-Developers: [build](docs/BUILD.md) · [tests and evidence](docs/TESTING.md) · [architecture](docs/ARCHITECTURE.md) · [known limitations](docs/LIMITATIONS.md) · [roadmap](docs/ROADMAP.md) · [licences](THIRD_PARTY.md).
+Developers: [build](docs/BUILD.md) · [tests and evidence](docs/TESTING.md) · [architecture](docs/ARCHITECTURE.md) · [known limitations](docs/LIMITATIONS.md) · [benchmark](docs/BENCHMARK.md) · [roadmap](docs/ROADMAP.md) · [licences](THIRD_PARTY.md).
 
 ## Version history
 
@@ -34,20 +34,26 @@ Full details in [CHANGELOG.md](CHANGELOG.md). Earlier versions were early protot
 | 0.5.1 | REAGL for normal text; GC16 FULL for heavy image/dark transitions and context changes; full refresh Off/4/8/16 (default 8); conservative image-only grayscale dithering. Inherited hardware dark mode is preserved, not emulated or switched off. |
 | 0.6 | PDF fit-page/fit-width/1.5×/2× and pan; EPUB persistent text anchors, adjustable typography and spacing; offline WordNet English dictionary; incremental in-book search; JSON/TXT/Markdown exports; reversible crash-dump marker helper. |
 | 0.7 | Lazy library covers, relative folders, Recent/Title/Progress sorting and progress bars; frontlight and warmth via LIPC only; experimental opt-in power-button sleep and independent emergency recovery. |
+| 0.8.1 | Library page changes no longer flicker while covers load: a cached page is one non-flashing update; uncached covers fill in with at most two partial updates limited to the cover column; no full flash on library page changes. Covers already loaded stay ready across page changes. Book count on the library bottom line (“85 books”, or “12 of 85 books” inside a folder). |
 | 0.8.0 | Scanned-book flicker fix: grey paper tone is no longer counted as a heavy image (scan-D-type 372-page scan: 372/372 GC16 flashes → 353 REAGL + 19 intentional cleans for opening, cover and real photo pages). Periodic full refresh Off by default and its bottom label removed. Persistent cover cache (≤10 MiB) with instant placeholders and next-page prefetch. Faster first page and EPUB pagination cache. Library storage line (free/total, books total) and per-book type and size. Battery bar and percentage top-right (read-only, no extra refresh). 64-bit timestamp fix for “opened”. App core dumps disabled. Known limitation: first cold open of a big EPUB with a deep saved spot can still be slow once. |
 
 Notes are overlays: original book files are never modified. Books belong in `/mnt/us/Books`, including subfolders. DRM-protected books are not supported by this workflow.
 
 ## Benchmark: Zigg Reader vs KOReader
 
-A side-by-side test on the same Kindle Paperwhite 12th gen, with the same books and settings, is coming. It will measure:
+In this test on one device (Kindle Paperwhite 12th gen, Zigg Reader 0.8.0 vs KOReader as installed), with identical injected touch events, a 1.5 MB EPUB and a 47 MB scanned-image PDF. Times run from touch injection to the framebuffer changing, not to the e-ink panel finishing. Lower is better. Full method and raw data: [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
-- tap-to-screen latency for page turns
-- rapid taps (bursts of page turns)
-- book open time
-- memory use
+| Metric (median) | KOReader | Zigg Reader |
+| --- | --- | --- |
+| Page turn, EPUB (20 turns) | 59 ms | **45 ms** |
+| Page turn, scanned PDF (20 turns) | 1,286 ms (6 of 20 at ~43 ms, the rest 0.3–2.7 s) | **58 ms** (max 83 ms) |
+| Book open to ready, EPUB (3 opens) | 3.1 s | **1.8 s** |
+| Book open to ready, scanned PDF (3 opens) | 5.1 s | **2.6 s** |
+| 10 rapid taps, EPUB: page changes seen | 8 of 10 | **10 of 10** |
+| Memory (RSS), EPUB | **52 MB** | 57 MB |
+| Memory (RSS), scanned PDF | **133 MB** (peak 156) | 316 MB (peak 336) |
 
-Results will be published here once the test has been run.
+Zigg Reader uses more memory on the PDF because it pre-renders and caches nearby pages, which is what keeps its page turns fast. Rapid taps on the PDF were inconclusive, and KOReader's library-launch samples were invalid, so neither is compared here.
 
 ## Screenshots
 
@@ -65,13 +71,17 @@ These previews are rendered on a computer from sample books, so they don't show 
 | --- | --- |
 | ![Storage and battery](shots/86_library_storage_battery_mock_dark.png) | ![Refresh log](shots/89_scan_turn_log.png) |
 
+| Book count (0.8.1, mock data) | Folder book count (0.8.1, mock data) |
+| --- | --- |
+| ![Book count](shots/90_library_book_count_mock_dark.png) | ![Folder count](shots/91_library_folder_count_mock_dark.png) |
+
 ## Space and distribution
 
 The installed ARM executable is **6,645,540 bytes** and the WordNet index **14,449,559 bytes** (13.78 MiB). The original compressed runtime is about 8.23 MiB. Allow at least 50 MiB free for a fresh installation, and more for upgrade backups and staging. Library thumbnails grow lazily to at most 10 MiB of cache payload, plus a small RAM cache. Books, notes and backups are additional.
 
 On our test Kindle, cleanup recovered about 2.5 GB of crash dumps and 150 MB of VoiceView data, leaving about 9.2 GB free. Your numbers will differ. System partitions were left alone.
 
-`release/zr08.tgz` is the current 0.8.0 runtime; `release/zr07.tgz` is kept for rollback. Checksums are in `release/SHA256SUMS`. `docs/REFERENCE_MANUAL.txt` is the detailed technical manual written during development.
+`release/zr081.tgz` is the current 0.8.1 runtime; `release/zr08.tgz` (0.8.0) is kept for rollback. Checksums are in `release/SHA256SUMS`. `docs/REFERENCE_MANUAL.txt` is the detailed technical manual written during development.
 
 ## Safety
 
