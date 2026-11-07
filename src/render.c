@@ -21,6 +21,23 @@ static pthread_once_t zr_once = PTHREAD_ONCE_INIT;
 static void zr_lock(void *user, int lock) { pthread_mutex_lock(&zr_mutexes[lock]); }
 static void zr_unlock(void *user, int lock) { pthread_mutex_unlock(&zr_mutexes[lock]); }
 
+/* v0.10.0 EPUB text: hyphenation (MuPDF's bundled patterns + compact Latin),
+ * justification and a second book font. Mode 0 keeps 0.9.x output. */
+extern fz_text_language fz_html_fallback_language;
+static int text_mode, book_font;
+static const unsigned char *res_la; static int res_la_len;
+static const unsigned char *res_sans[4]; static int res_sans_len[4];
+void zr_set_text_resources(const unsigned char *la,int la_len,const unsigned char *r,int rl,const unsigned char *b,int bl,const unsigned char *i,int il,const unsigned char *bi,int bil){
+ res_la=la;res_la_len=la_len;res_sans[0]=r;res_sans_len[0]=rl;res_sans[1]=b;res_sans_len[1]=bl;res_sans[2]=i;res_sans_len[2]=il;res_sans[3]=bi;res_sans_len[3]=bil;}
+void zr_set_text_style(int mode,int font){
+ text_mode=mode<0?0:mode>2?2:mode;book_font=font<0?0:font>2?2:font;
+ fz_html_fallback_language=text_mode==2?FZ_LANG_TAG2('e','n'):FZ_LANG_UNSET;}
+int zr_text_mode(void){return text_mode;}
+int zr_book_font(void){return book_font;}
+static fz_font *zr_system_font(fz_context *ctx,const char *name,int bold,int italic,int needs_exact_metrics){
+ (void)needs_exact_metrics;if(strcmp(name,"ZR Sans"))return NULL;int k=(bold?1:0)+(italic?2:0);
+ if(!res_sans[k])k=0;if(!res_sans[k])return NULL;
+ return fz_new_font_from_memory(ctx,"Noto Sans",res_sans[k],res_sans_len[k],0,0);}
 static void zr_init(void)
 {
 	static fz_locks_context locks = { NULL, zr_lock, zr_unlock };
@@ -29,6 +46,17 @@ static void zr_init(void)
 	if (zr_base) {
 		fz_try(zr_base) fz_register_document_handlers(zr_base);
 		fz_catch(zr_base) fz_report_error(zr_base);
+		fz_install_load_system_font_funcs(zr_base, zr_system_font, NULL, NULL);
+		if (res_la) {
+			fz_stream *stm = NULL;
+			fz_var(stm);
+			fz_try(zr_base) {
+				stm = fz_open_memory(zr_base, res_la, res_la_len);
+				fz_register_hyphenator(zr_base, FZ_LANG_TAG2('l','a'), fz_new_hyphenator_from_stream(zr_base, stm));
+			}
+			fz_always(zr_base) fz_drop_stream(zr_base, stm);
+			fz_catch(zr_base) fz_report_error(zr_base);
+		}
 	}
 }
 
@@ -58,8 +86,13 @@ struct zr_doc {
 
 static void set_css(fz_context *ctx, fz_document *doc, float margin_pt, float font_pt, float spacing, int styled)
 {
-	char css[512];
-	fz_snprintf(css, sizeof css, "@page{margin:%gpt %gpt !important}html,body{font-size:%gpt !important}body{margin:0 !important}*{line-height:%g !important}", margin_pt * 0.8f, margin_pt, font_pt, spacing);
+	char css[1024];
+	fz_snprintf(css, sizeof css, "@page{margin:%gpt %gpt !important}html,body{font-size:%gpt !important}body{margin:0 !important}*{line-height:%g !important}%s%s%s", margin_pt * 0.8f, margin_pt, font_pt, spacing,
+		/* publisher CSS still wins for centred/right paragraphs (same specificity, parsed later) */
+		text_mode >= 1 ? "p{text-align:justify}" : "",
+		text_mode == 2 ? "*{hyphens:auto}" : "",
+		book_font == 1 ? "body,body *{font-family:\"Charis SIL\" !important}pre,code,tt,kbd,samp,pre *,code *{font-family:monospace !important}" :
+		book_font == 2 ? "body,body *{font-family:\"ZR Sans\" !important}pre,code,tt,kbd,samp,pre *,code *{font-family:monospace !important}" : "");
 	if (!styled) fz_snprintf(css, sizeof css, "@page{margin:%gpt %gpt !important}body{margin:0 !important}", margin_pt * .8f, margin_pt);
 	fz_style_document(ctx, doc, 1, css);
 }
@@ -74,7 +107,8 @@ static void layout_path(char *out,size_t cap,const char *path,float w,float h,fl
  struct stat st;if(!*layout_dir||stat(path,&st)){*out=0;return;}
  uint64_t k=khash(14695981039346656037ULL,path,strlen(path));
  int64_t fields[]={st.st_size,st.st_mtim.tv_sec,st.st_mtim.tv_nsec,8,styled};float f[]={w,h,em,margin,spacing};
- k=khash(k,fields,sizeof fields);k=khash(k,f,sizeof f);snprintf(out,cap,"%s/%016llx.zra",layout_dir,(unsigned long long)k);
+ k=khash(k,fields,sizeof fields);k=khash(k,f,sizeof f);
+ if(styled&&(text_mode||book_font)){int t[2]={text_mode,book_font};k=khash(k,t,sizeof t);}snprintf(out,cap,"%s/%016llx.zra",layout_dir,(unsigned long long)k);
 }
 static void save_layout(zr_doc *z,const char *name){
  if(!*name||!z->reflow||!fz_document_supports_accelerator(z->ctx,z->doc))return;
@@ -890,6 +924,23 @@ static void join_colliding_initials(zr_word *out, int *count, char *text, int ca
     }
 }
 
+/* v0.10.0: wide justified gaps make MuPDF split one visual line into several
+ * text lines; rejoin words that share a baseline and renumber lines. */
+static void join_justified_lines(zr_word *w, int n)
+{
+	int id = -1, prev_src = -1;
+	for (int i = 0; i < n; i++) {
+		int src = w[i].line;
+		if (i > 0 && src != prev_src) {
+			float h = w[i].y1 - w[i].y0, dy = w[i].y1 - w[i-1].y1;
+			if (dy < 0) dy = -dy;
+			if (!(dy < 0.25f * h && w[i].x0 > w[i-1].x1 - 0.5f)) id++;
+		} else if (i == 0) id = 0;
+		prev_src = src;
+		w[i].line = id;
+	}
+}
+
 int zr_words(zr_doc *z, int page, zr_word *out, int max, char *text, int cap)
 {
 	fz_context *ctx = z->ctx;
@@ -902,6 +953,7 @@ int zr_words(zr_doc *z, int page, zr_word *out, int max, char *text, int cap)
 		st = fz_new_stext_page_from_display_list(ctx, l, &opts);
 		words_block(st->first_block, out, max, text, cap, &n, &tl, &line);
         if (z->is_pdf) join_colliding_initials(out, &n, text, cap, &tl);
+        else if (z->reflow && text_mode) join_justified_lines(out, n);
 	}
 	fz_always(ctx) fz_drop_stext_page(ctx, st);
 	fz_catch(ctx) {
@@ -1038,3 +1090,6 @@ zr_doc *zr_open_worker(const char *path,float w,float h,float em,float margin,fl
 
 /* v0.9.3 reduced-resolution JPEG 2000 previews (needs MuPDF's OpenJPEG headers on the include path) */
 #include "jpxsmall.c"
+
+/* v0.10.0: force the next zr_relayout after a text style change. */
+void zr_touch_layout(zr_doc *z){if(z)z->lw=-1;}

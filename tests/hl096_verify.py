@@ -27,7 +27,7 @@ def run(d,script,book=BOOK,extra=(),bg=False):
  p=subprocess.run(args,capture_output=True,timeout=120);log=p.stderr.decode()
  assert p.returncode==0,log[-3000:];assert 'render_errors=0' in log,log[-3000:];assert 'exit gesture' not in log;return log
 vp=subprocess.run([str(HOST),'--version'],capture_output=True,text=True);v=(vp.stdout or vp.stderr).split('\n')[0].strip()
-m=re.search(r"VERSION\s*=\s*'([\d.]+)'",sorted(T.glob('package09[6-9].py'))[-1].read_text());assert m and v==f'zreader {m[1]}',(v,m and m[1])
+m=re.search(r"VERSION\s*=\s*'([\d.]+)'",(sorted(T.glob('package09[6-9].py'))+sorted(T.glob('package1[0-9][0-9].py')))[-1].read_text());assert m and v==f'zreader {m[1]}',(v,m and m[1])
 print(f'PASS --version prints "{v}" = package version')
 assert BOOK.exists(),'needs the local test PDF (not distributed)'
 with tempfile.TemporaryDirectory(dir=T,prefix='hl096-') as t:

@@ -70,7 +70,7 @@ quit
  assert 'library: 85 books' in log
  assert 'light change: 0=24 simulated' in log and 'light change: 1=17 simulated' in log,log
  assert 'sleep: drawing cover' in log and 'sleep: cover completed' in log and 'sleep: wake; restore GC16' in log,log
- assert json.loads((data/'ui07.json').read_text())==dict(sort=1,power_sleeps=1,clean_scans=1)
+ u07=json.loads((data/'ui07.json').read_text());assert {k:u07[k] for k in ('sort','power_sleeps','clean_scans')}==dict(sort=1,power_sleeps=1,clean_scans=1) and set(u07)<={'sort','power_sleeps','clean_scans','text_mode','book_font'},u07  # 0.10.0 adds text_mode/book_font
  assert len(list((data/'thumbs').glob('*.zrt')))>=7
  assert sum(p.stat().st_size for p in (data/'thumbs').glob('*'))<=10*1024*1024
  # Relaunch persists title sort and opt-in, but never restores saved light numbers.

@@ -4,8 +4,13 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.9.9";
+const VERSION = "0.10.0";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
+// v0.10.0 second book font (OFL, Latin subset) and compact Latin hyphenation patterns (MIT).
+const sans_bold = @embedFile("fonts/NotoSans-Bold-Latin.ttf");
+const sans_italic = @embedFile("fonts/NotoSans-Italic-Latin.ttf");
+const sans_bold_italic = @embedFile("fonts/NotoSans-BoldItalic-Latin.ttf");
+const hyph_la = @embedFile("hyph/la");
 
 // ---------------- C ----------------
 const ZrDoc = opaque {};
@@ -24,6 +29,9 @@ extern fn zr_page_count_hint(z: *ZrDoc, pages: c_int) void;
 extern fn zr_layout_cache(data: [*:0]const u8) void;
 extern fn zr_no_core() void;
 extern fn zr_battery() c_int;
+extern fn zr_set_text_resources(la: [*]const u8, la_len: c_int, r: [*]const u8, rl: c_int, b: [*]const u8, bl: c_int, i: [*]const u8, il: c_int, bi: [*]const u8, bil: c_int) void;
+extern fn zr_set_text_style(mode: c_int, font: c_int) void;
+extern fn zr_touch_layout(z: ?*ZrDoc) void;
 extern fn zr_set_ui_wake(fd: c_int) void;
 extern fn zr_file_mtime(path: [*:0]const u8) i64;
 extern fn zr_up_start(books: [*:0]const u8, port: c_int, max: u64, free_floor: u64, device: c_int) c_int;
@@ -507,6 +515,7 @@ const Opts = struct {
     upload_port: u16 = 8080,
     stats_idle_sec: u32 = 150,
     sim_battery: c_int = 76,
+    text_mode: ?c_int = null,
     legacy_poll: bool = false,
     upload_min_free_mib: u64 = 6144,
     upload_max_mib: u64 = 500,
@@ -710,6 +719,12 @@ fn textCenter(font: c_int, size: f32, r: Rect, s: []const u8, gray: u8) void {
     const x = @as(f32, @floatFromInt(r.x)) + (@as(f32, @floatFromInt(r.w)) - w) / 2;
     const base = @as(f32, @floatFromInt(r.y)) + @as(f32, @floatFromInt(r.h)) / 2 + size * 0.36;
     text(font, size, x, base, s, gray);
+}
+fn smallButton(r: Rect, label: []const u8) void {
+    fill(r, 0xFF);
+    frame(r, 3, 0x00);
+    const size: f32 = if (textW(SANS, 30, label) > @as(f32, @floatFromInt(r.w - 20))) 26 else 30;
+    textCenter(SANS, size, r, label, 0x00);
 }
 fn button(r: Rect, label: []const u8, active: bool) void {
     fill(r, if (active) 0x00 else 0xFF);
@@ -1597,6 +1612,11 @@ fn pcKey(page: i32, view: u8, step: i32, pan_x: f32, pan_y: f32, base_width: boo
     const k = std.fmt.bufPrint(&b, "zrpg1|{s}|{d}|{d}|{d}x{d}|d{d}|c{d}|i{d}|p{d}|v{d}|s{d}|x{d:.9}|y{d:.9}|b{d}|t{d}|f{d:.2}|m{d:.1}|l{d:.2}|a{d}:{d}:{d}:{x}", .{
         book.pathS(), book.fsize, book.fmtime, W, H, @intFromBool(opts.image_dither), @intFromBool(opts.clean_scans), @intFromBool(opts.no_images), page, view, step, pan_x, pan_y, @intFromBool(base_width), @intFromBool(trim), font, margin, spacing, a.chapter, a.start, a.end, a.hash,
     }) catch return 0;
+    if (book.reflow and (text_mode != 0 or book_font != 0)) {
+        var b2: [600]u8 = undefined;
+        const k2 = std.fmt.bufPrint(&b2, "{s}|ts{d}{d}", .{ k, text_mode, book_font }) catch return 0;
+        return fnv(k2);
+    }
     return fnv(k);
 }
 fn pcCurrentKey() u64 {
@@ -1925,7 +1945,7 @@ fn ui07Path(out: []u8) [:0]u8 {
 fn saveUi07() void {
     var path: [1200]u8 = undefined;
     var buf: [120]u8 = undefined;
-    const data = std.fmt.bufPrint(&buf, "{{\"sort\":{d},\"power_sleeps\":{d},\"clean_scans\":{d}}}\n", .{ lib_sort, @intFromBool(power_sleeps), @intFromBool(opts.clean_scans) }) catch return;
+    const data = std.fmt.bufPrint(&buf, "{{\"sort\":{d},\"power_sleeps\":{d},\"clean_scans\":{d},\"text_mode\":{d},\"book_font\":{d}}}\n", .{ lib_sort, @intFromBool(power_sleeps), @intFromBool(opts.clean_scans), text_mode, book_font }) catch return;
     if (!writeFileAtomic(ui07Path(&path), data)) toast("Could not save library/sleep settings", .{});
 }
 fn init07() void {
@@ -1937,7 +1957,17 @@ fn init07() void {
         }
         power_sleeps = (jsonNum(data, "power_sleeps") orelse 0) == 1;
         if (!opts.clean_cli) opts.clean_scans = (jsonNum(data, "clean_scans") orelse 1) != 0;
+        if (jsonNum(data, "text_mode")) |v| text_mode = @intFromFloat(std.math.clamp(v, 0, 2));
+        if (jsonNum(data, "book_font")) |v| book_font = @intFromFloat(std.math.clamp(v, 0, 2));
     }
+    if (opts.text_mode) |m| text_mode = m;
+    // Host tests written before 0.10.0 lay out EPUBs independently with the 0.9.x
+    // style; the runner sets this so they keep checking that layout (sim only).
+    if (opts.sim != null and opts.text_mode == null) {
+        if (std.c.getenv("ZREADER_SIM_TEXT_MODE")) |s| text_mode = std.math.clamp(std.fmt.parseInt(c_int, std.mem.span(s), 10) catch text_mode, 0, 2);
+    }
+    zr_set_text_resources(hyph_la.ptr, hyph_la.len, sans_font.ptr, sans_font.len, sans_bold.ptr, sans_bold.len, sans_italic.ptr, sans_italic.len, sans_bold_italic.ptr, sans_bold_italic.len);
+    zr_set_text_style(text_mode, book_font);
     const root = std.fmt.bufPrintSentinel(&path, "{s}", .{opts.data}, 0) catch return;
     zr_layout_cache(root);
     zr_thumbs_init(root);
@@ -2441,7 +2471,29 @@ fn bottomPanel() Rect {
     return .{ .x = 0, .y = @as(i32, @intCast(H)) - h, .w = @intCast(W), .h = h };
 }
 fn spacingButton() Rect {
-    return .{ .x = 70, .y = @as(i32, @intCast(H)) - 182, .w = @as(i32, @intCast(W)) - 140, .h = 75 };
+    return .{ .x = 406, .y = @as(i32, @intCast(H)) - 182, .w = 460, .h = 75 };
+}
+// v0.10.0 EPUB text controls either side of line spacing.
+fn bookFontButton() Rect {
+    return .{ .x = 70, .y = @as(i32, @intCast(H)) - 182, .w = 320, .h = 75 };
+}
+fn textModeButton() Rect {
+    return .{ .x = 882, .y = @as(i32, @intCast(H)) - 182, .w = @as(i32, @intCast(W)) - 70 - 882, .h = 75 };
+}
+var text_mode: c_int = 2; // 0 publisher/0.9.x, 1 justify, 2 justify + hyphenation
+var book_font: c_int = 0; // 0 book's own, 1 Charis SIL (serif), 2 Noto Sans
+const TEXT_MODE_NAMES = [_][]const u8{ "Align: original", "Align: justify", "Justify + hyphens" };
+const BOOK_FONT_NAMES = [_][]const u8{ "Font: book", "Font: Charis", "Font: Noto Sans" };
+fn setTextStyle(mode: c_int, font: c_int) void {
+    text_mode = mode;
+    book_font = font;
+    zr_set_text_style(mode, font);
+    saveUi07();
+    logf("text style: mode={d} ({s}) font={d} ({s})", .{ mode, TEXT_MODE_NAMES[@intCast(mode)], font, BOOK_FONT_NAMES[@intCast(font)] });
+    if (!book.reflow or !book.open) return;
+    zr_touch_layout(book.doc);
+    relayoutStyle(pool.font, pool.margin, pool.spacing);
+    need_page = true;
 }
 fn refreshButton() Rect {
     return .{ .x = 70, .y = @as(i32, @intCast(H)) - 95, .w = @as(i32, @intCast(W)) - 140, .h = 75 };
@@ -2841,8 +2893,10 @@ fn drawMenu() void {
         button(panelButton(1, 2), "Margin -", false);
         button(panelButton(1, 3), "Margin +", false);
         var sb: [128]u8 = undefined;
-        const label = std.fmt.bufPrint(&sb, "Text {d:.0}px  /  Line spacing: {d:.2}x", .{ pool.font / 0.75, pool.spacing }) catch "Line spacing";
+        const label = std.fmt.bufPrint(&sb, "{d:.0}px / spacing {d:.2}x", .{ pool.font / 0.75, pool.spacing }) catch "Line spacing";
         button(spacingButton(), label, false);
+        smallButton(bookFontButton(), BOOK_FONT_NAMES[@intCast(book_font)]);
+        smallButton(textModeButton(), TEXT_MODE_NAMES[@intCast(text_mode)]);
     }
 }
 
@@ -4721,6 +4775,8 @@ fn onReaderTap(x: i32, y: i32, t_ev: u64) void {
         if (book.reflow) {
             const f = pool.font;
             const m = pool.margin;
+            if (bookFontButton().contains(x, y)) return setTextStyle(text_mode, @mod(book_font + 1, 3));
+            if (textModeButton().contains(x, y)) return setTextStyle(@mod(text_mode + 2, 3), book_font);
             if (spacingButton().contains(x, y)) {
                 const spacing: f32 = if (pool.spacing < 1.3) 1.4 else if (pool.spacing < 1.6) 1.7 else 1.15;
                 relayoutStyle(f, m, spacing);
@@ -5389,6 +5445,9 @@ fn parseArgs(argv: []const [*:0]const u8) bool {
         } else if (eql(a, "--sim-battery") and has_next) {
             i += 1;
             opts.sim_battery = std.fmt.parseInt(c_int, std.mem.span(argv[i]), 10) catch return false;
+        } else if (eql(a, "--text-mode") and has_next) {
+            i += 1;
+            opts.text_mode = std.math.clamp(std.fmt.parseInt(c_int, std.mem.span(argv[i]), 10) catch return false, 0, 2);
         } else if (eql(a, "--legacy-poll")) {
             opts.legacy_poll = true;
         } else if (eql(a, "--stats-idle-sec") and has_next) {

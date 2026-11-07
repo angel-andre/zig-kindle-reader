@@ -1,0 +1,39 @@
+--- a/source/html/html-parse.c
++++ b/source/html/html-parse.c
+@@ -30,6 +30,9 @@
+ 
+ enum { T, R, B, L };
+ 
++/* zreader: language used for hyphenation when a book does not declare one (unset by default). */
++fz_text_language fz_html_fallback_language = FZ_LANG_UNSET;
++
+ static const char *html_default_css =
+ "@page{margin:3em 2em}"
+ "a:link{color:blue;text-decoration:underline}"
+@@ -1449,7 +1452,7 @@
+ 		g->markup_dir = style->direction;
+ 	}
+ 
+-	lang_att = fz_xml_att(node, "lang");
++	lang_att = fz_html_fallback_language != FZ_LANG_UNSET ? fz_xml_att_alt(node, "lang", "xml:lang") : fz_xml_att(node, "lang");
+ 	if (lang_att)
+ 		g->markup_lang = fz_text_language_from_string(lang_att);
+ 
+@@ -2141,7 +2144,7 @@
+ 	g.list_counter = 1;
+ 	g.section_depth = 0;
+ 	g.markup_dir = FZ_BIDI_LTR;
+-	g.markup_lang = FZ_LANG_UNSET;
++	g.markup_lang = fz_html_fallback_language;
+ 	g.href = NULL;
+ 	g.styles = NULL;
+ 	g.publisher_css = publisher_css;
+@@ -2216,7 +2219,7 @@
+ 		g.pool = tree->pool;
+ 		if (style.direction != FZ_BIDI_UNSET)
+ 			g.markup_dir = style.direction;
+-		g.markup_lang = FZ_LANG_UNSET;
++		g.markup_lang = fz_html_fallback_language;
+ 
+ 		// Create root node
+ 		tree->root = new_box(ctx, &g, NULL, BOX_BLOCK, &style);

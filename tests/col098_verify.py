@@ -21,7 +21,7 @@ def run(d,script):
 def views(log):return re.findall(r'library view: sort=([^ ]+(?: [^ ]+ [^ ]+)?) shown=(\d+): (.*)',log)
 def coll(d):return (d/'data'/'state'/'collections.tsv').read_text()
 vp=subprocess.run([str(HOST),'--version'],capture_output=True,text=True);v=(vp.stdout or vp.stderr).split('\n')[0].strip()
-m=re.search(r"VERSION\s*=\s*'([\d.]+)'",sorted(T.glob('package09[8-9].py'))[-1].read_text());assert m and v==f'zreader {m[1]}',(v,m and m[1])
+m=re.search(r"VERSION\s*=\s*'([\d.]+)'",(sorted(T.glob('package09[8-9].py'))+sorted(T.glob('package1[0-9][0-9].py')))[-1].read_text());assert m and v==f'zreader {m[1]}',(v,m and m[1])
 print(f'PASS --version prints "{v}" = package version')
 from PIL import Image,ImageDraw
 with tempfile.TemporaryDirectory(dir=T,prefix='col098-') as t:

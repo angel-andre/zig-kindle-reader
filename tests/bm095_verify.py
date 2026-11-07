@@ -18,7 +18,7 @@ def run(d,book,script):
  return log
 # --version must match the package version
 vp=subprocess.run([str(HOST),'--version'],capture_output=True,text=True);v=(vp.stdout or vp.stderr).split('\n')[0].strip()
-pkg=sorted(T.glob('package09[5-9].py'))[-1].read_text();m=re.search(r"VERSION\s*=\s*'([\d.]+)'",pkg)
+pkg=(sorted(T.glob('package09[5-9].py'))+sorted(T.glob('package1[0-9][0-9].py')))[-1].read_text();m=re.search(r"VERSION\s*=\s*'([\d.]+)'",pkg)
 assert m and v==f'zreader {m[1]}',(v,m and m[1]);print(f'PASS --version prints "{v}" = package version')
 book=R.parent/'testbooks'/'digital-big.pdf'
 with tempfile.TemporaryDirectory(dir=T,prefix='bm095-') as t:

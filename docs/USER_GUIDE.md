@@ -23,6 +23,10 @@ PDF views: fit page, cropped fit width, 1.5× and 2×. Fit-width navigation step
 
 EPUBs offer nine text sizes, adjustable margins and line spacing 1.15/1.40/1.70. Chapter/text anchors relocate notes and reading positions after reflow. When relocation cannot be trusted, a passage remains in Notes/export as unresolved instead of marking unrelated text.
 
+### EPUB text (0.10.0)
+
+The EPUB menu row with line spacing has two more buttons. **Align** cycles “Justify + hyphens” (default), “Justify” and “Align: original” (the book’s own alignment, exactly as before 0.10.0). **Font** cycles “Font: book” (the book’s own fonts), “Font: Charis” (a serif) and “Font: Noto Sans” (a sans-serif). Both choices apply to all EPUBs, are remembered, and re-lay the book out at the same place. Hyphenation follows the book’s language (English, Latin, German, French, Spanish, Italian and more); books that don’t declare a language are hyphenated as English. Centred and right-aligned paragraphs stay as the book set them. PDFs are not affected.
+
 ## Highlights & notes
 
 **Selecting.** Long-press a word to start, then drag to the end word, or lift and tap the end word. Either endpoint can be refined with its handle. This works on EPUB text and on PDFs with a text layer, including OCR'd scans such as Internet Archive books; pages without any text layer can't be selected.

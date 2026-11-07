@@ -15,7 +15,7 @@ def run(d,script,extra=(),book=BOOK,books=None):
 def lat(log,k):
  m=re.search(k+r'\s+n=\s*(\d+)\s+min=\s*(\d+) p50=\s*(\d+) avg=\s*(\d+) p90=\s*(\d+)',log);return int(m[1]),int(m[3]),int(m[5])
 vp=subprocess.run([str(HOST),'--version'],capture_output=True,text=True);v=(vp.stdout or vp.stderr).split('\n')[0].strip()
-m=re.search(r"VERSION\s*=\s*'([\d.]+)'",sorted(T.glob('package09[9].py'))[-1].read_text());assert m and v==f'zreader {m[1]}',(v,m and m[1])
+m=re.search(r"VERSION\s*=\s*'([\d.]+)'",(sorted(T.glob('package09[9].py'))+sorted(T.glob('package1[0-9][0-9].py')))[-1].read_text());assert m and v==f'zreader {m[1]}',(v,m and m[1])
 print(f'PASS --version prints "{v}" = package version')
 # 1. idle wakeups: device worker (host build of platform07.c, no LIPC) and UI loop (sim)
 dv=json.loads(subprocess.run([str(T/'dev099_measure.sh')],capture_output=True,text=True,check=True).stdout.strip().splitlines()[-1])

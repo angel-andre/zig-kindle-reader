@@ -14,7 +14,7 @@ Copyright 2006 Princeton University. The included compact index is a modified gl
 
 ## Fonts
 
-The UI uses Noto Sans; `src/fonts/NotoSans-OFL.txt` contains SIL OFL 1.1. MuPDF's bundled Charis SIL/document font resources and notices remain with its source distribution. Preserve upstream notices when redistributing.
+The UI uses Noto Sans; `src/fonts/NotoSans-OFL.txt` contains SIL OFL 1.1. The EPUB “Noto Sans” book font adds Noto Sans Bold, Italic and Bold Italic, subset to Latin, Greek and common punctuation (same OFL 1.1). `src/hyph/la` holds the Latin hyphenation patterns by Claudio Beccari from the hyph-utf8 project (MIT or LPPL; see `src/hyph/la.info`). MuPDF's bundled Charis SIL/document font resources and notices remain with its source distribution. Preserve upstream notices when redistributing.
 
 ## Books and screenshots
 

@@ -6,6 +6,11 @@ MU=${MU:-$HERE/../mupdf-1.28.6-source}
 Z=${Z:-$HERE/../zig/zig}
 TARGETS=${TARGETS:-libs}
 cd "$MU"
+# zreader's small MuPDF patches (mupdf-patches/*.patch), applied once.
+for p in "$HERE"/mupdf-patches/*.patch; do
+  [ -f "$p" ] || continue
+  patch -p1 -R -s -f --dry-run < "$p" >/dev/null 2>&1 || patch -p1 -N -s < "$p"
+done
 TGT=${TGT:-arm-linux-musleabihf}
 CPU=${CPU:--mcpu=cortex_a53}
 PFX=${PFX:-armhf-}

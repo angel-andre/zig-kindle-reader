@@ -22,7 +22,7 @@ def stats(d):
   if f[0]=='d':days[int(f[1])]=int(f[2])
  return b,days
 vp=subprocess.run([str(HOST),'--version'],capture_output=True,text=True);v=(vp.stdout or vp.stderr).split('\n')[0].strip()
-m=re.search(r"VERSION\s*=\s*'([\d.]+)'",sorted(T.glob('package09[7-9].py'))[-1].read_text());assert m and v==f'zreader {m[1]}',(v,m and m[1])
+m=re.search(r"VERSION\s*=\s*'([\d.]+)'",(sorted(T.glob('package09[7-9].py'))+sorted(T.glob('package1[0-9][0-9].py')))[-1].read_text());assert m and v==f'zreader {m[1]}',(v,m and m[1])
 print(f'PASS --version prints "{v}" = package version')
 BOOK=R.parent/'testbooks'/'digital-big.pdf'
 today=(datetime.date.today()-datetime.date(1970,1,1)).days

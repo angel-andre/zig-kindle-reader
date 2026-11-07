@@ -24,6 +24,10 @@ int zr_words(zr_doc *z, int page, zr_word *out, int max, char *text, int cap);
  * Native MuPDF bookmarks contain pointers and must never be serialized. */
 typedef struct { int chapter; uint32_t start, end; uint64_t hash; } zr_anchor;
 void zr_set_spacing(zr_doc *z, float spacing);
+void zr_set_text_resources(const unsigned char *la,int la_len,const unsigned char *r,int rl,const unsigned char *b,int bl,const unsigned char *i,int il,const unsigned char *bi,int bil);
+void zr_set_text_style(int mode,int font);
+int zr_text_mode(void);
+int zr_book_font(void);
 int zr_anchor_words(zr_doc *z, int page, int first, int last, zr_anchor *out);
 int zr_anchor_page(zr_doc *z, const zr_anchor *a);
 int zr_anchor_quads(zr_doc *z, const zr_anchor *a, int page, float *quads, int max);
