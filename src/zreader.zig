@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.9.5";
+const VERSION = "0.9.6";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 
 // ---------------- C ----------------
@@ -30,6 +30,7 @@ extern fn zr_up_stop() void;
 extern fn zr_up_revision() c_uint;
 extern fn zr_up_saved() c_uint;
 extern fn zr_up_status(out: [*]u8, cap: c_int) void;
+extern fn zr_up_set_export(dir: [*:0]const u8) void;
 extern fn zr_up_address(out: [*]u8, cap: c_int) c_int;
 extern fn zr_pc_init(data: [*:0]const u8, cap: u64) c_int;
 extern fn zr_pc_submit(name: [*:0]const u8, key: u64, fb: [*]const u8, w: c_int, h: c_int, stride: c_int) c_int;
@@ -1229,7 +1230,7 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
 }
 
 // ---------------- book, notes, state ----------------
-const Note = struct { anchor: Anchor = .{}, unresolved: bool = false, page: i32, style: u8, ts: i64, text: []u8, nq: usize, q: [24][4]f32 };
+const Note = struct { anchor: Anchor = .{}, unresolved: bool = false, page: i32, style: u8, ts: i64, text: []u8, nq: usize, q: [24][4]f32, comment: []u8 = &.{} };
 const STYLE_NAMES = [_][]const u8{ "underline", "highlight", "note" };
 const STYLE_LABELS = [_][]const u8{ "Underline", "Highlight", "Note" };
 
@@ -1371,7 +1372,10 @@ fn saveState() void {
 }
 
 fn freeNotes() void {
-    for (book.notes[0..book.nnotes]) |*n| alloc.free(n.text);
+    for (book.notes[0..book.nnotes]) |*n| {
+        alloc.free(n.text);
+        alloc.free(n.comment);
+    }
     book.nnotes = 0;
 }
 fn loadNotes() void {
@@ -1399,6 +1403,8 @@ fn loadNotes() void {
         }
         const t = jsonStr(obj, "text", &tbuf) orelse "";
         n.text = alloc.dupe(u8, t) catch continue;
+        n.comment = &.{};
+        if (jsonStr(obj, "comment", &tbuf)) |c| n.comment = alloc.dupe(u8, c) catch &.{};
         n.nq = 0;
         if (jsonKey(obj, "quads")) |qi| {
             var i = qi;
@@ -1495,7 +1501,13 @@ fn saveNotesJson() void {
         for (n.q[0..n.nq], 0..) |q, k| {
             b.print("{s}[{d:.2},{d:.2},{d:.2},{d:.2}]", .{ if (k > 0) "," else "", q[0], q[1], q[2], q[3] });
         }
-        b.put("],\"text\":\"");
+        b.put("],");
+        if (n.comment.len > 0) {
+            b.put("\"comment\":\"");
+            b.esc(n.comment);
+            b.put("\",");
+        }
+        b.put("\"text\":\"");
         b.esc(n.text);
         b.put(if (i + 1 < book.nnotes) "\"},\n" else "\"}\n");
     }
@@ -1514,7 +1526,13 @@ fn saveNotesTxt() void {
         b.print("p. {d}  \xc2\xb7  {s}  \xc2\xb7  {s}\n", .{ n.page + 1, STYLE_LABELS[n.style], fmtDate(n.ts, &db) });
         b.put("\xe2\x80\x9c");
         b.put(n.text);
-        b.put("\xe2\x80\x9d\n\n");
+        b.put("\xe2\x80\x9d\n");
+        if (n.comment.len > 0) {
+            b.put("Note: ");
+            b.put(n.comment);
+            b.put("\n");
+        }
+        b.put("\n");
     }
     var pb: [1200]u8 = undefined;
     var fb2: [1200]u8 = undefined;
@@ -1530,6 +1548,7 @@ fn saveNotes() void {
 fn deleteNote(k: usize) void {
     if (k >= book.nnotes) return;
     alloc.free(book.notes[k].text);
+    alloc.free(book.notes[k].comment);
     var j = k;
     while (j + 1 < book.nnotes) : (j += 1) book.notes[j] = book.notes[j + 1];
     book.nnotes -= 1;
@@ -2044,6 +2063,13 @@ fn startUpload() void {
     const books = std.fmt.bufPrintSentinel(&bz, "{s}", .{opts.books}, 0) catch return;
     up_addr_len = 0;
     if (zr_up_address(&up_addr, up_addr.len) == 0) up_addr_len = std.mem.indexOfScalar(u8, &up_addr, 0) orelse 0;
+    const ex = exportAllNotes();
+    var ez: [1200]u8 = undefined;
+    if (std.fmt.bufPrintSentinel(&ez, "{s}/export", .{opts.data}, 0)) |ed| {
+        mkdirP(ed);
+        zr_up_set_export(ed);
+    } else |_| {}
+    logf("upload export: {d} book(s) refreshed, {d} error(s)", .{ ex.books, ex.errors });
     const rc = zr_up_start(books, opts.upload_port, opts.upload_max_mib << 20, opts.upload_min_free_mib << 20, @intFromBool(opts.sim == null));
     up_ok = rc == 0;
     up_rev = zr_up_revision();
@@ -2066,6 +2092,7 @@ fn drawUpload() void {
     text(SANS, 28, 70, 700, std.fmt.bufPrint(&l, "PDF and EPUB only, up to {d} MB per file.", .{opts.upload_max_mib}) catch "", 0x55);
     text(SANS, 28, 70, 750, std.fmt.bufPrint(&l, "Uploads are refused if less than {d} GB would stay free.", .{opts.upload_min_free_mib / 1024}) catch "", 0x55);
     text(SANS, 28, 70, 800, "The upload page stops as soon as you leave this screen.", 0x55);
+    text(SANS, 28, 70, 850, "The same page offers your highlights and notes to download.", 0x55);
     var st: [256]u8 = undefined;
     zr_up_status(&st, st.len);
     const sl = std.mem.indexOfScalar(u8, &st, 0) orelse 0;
@@ -2317,7 +2344,7 @@ fn scanLibrary() void {
 }
 
 // ---------------- UI state ----------------
-const Screen = enum { library, reader, toc, notes, search, device, upload, bookmarks };
+const Screen = enum { library, reader, toc, notes, search, device, upload, bookmarks, noteedit };
 var screen: Screen = .library;
 var menu_open = false;
 var popup_open = false;
@@ -2532,7 +2559,7 @@ fn popupRect() Rect {
         const nq = noteQuads(&book.notes[k], pool.cur, &qs);
         for (qs[0..nq]) |q| sr = Rect.unite(sr, toScreen(q));
     }
-    const w: i32 = 1100;
+    const w: i32 = 1220;
     const h: i32 = 124;
     const x = @divTrunc(@as(i32, @intCast(W)) - w, 2);
     var y = sr.y + sr.h + 20;
@@ -2540,15 +2567,44 @@ fn popupRect() Rect {
     if (y < 20) y = 20;
     return .{ .x = x, .y = y, .w = w, .h = h };
 }
+// v0.9.6 popup. Action indices are stable (0 underline/remove, 1 highlight/
+// style, 2 copy to notes, 3 cancel, 4 look up, 5 note); this is the column order.
+fn popupOrder() []const i32 {
+    if (editing_note != null) return &[_]i32{ 5, 0, 1, 2, 3 };
+    if (sel_active and sel_a == sel_b) return &[_]i32{ 1, 0, 5, 4, 2, 3 };
+    return &[_]i32{ 1, 0, 5, 2, 3 };
+}
 fn popupCount() i32 {
-    return if (editing_note == null and sel_active and sel_a == sel_b) 5 else 4;
+    return @intCast(popupOrder().len);
 }
 fn popupButton(i: i32) Rect {
     const p = popupRect();
-    const count = popupCount();
+    const order = popupOrder();
+    const count: i32 = @intCast(order.len);
     const bw = @divTrunc(p.w - 24, count);
-    const col = if (count == 5 and i == 3) 4 else if (count == 5 and i == 4) 3 else i;
+    var col: i32 = count - 1;
+    for (order, 0..) |o, c| if (o == i) {
+        col = @intCast(c);
+    };
+    if (std.mem.indexOfScalar(i32, order, i) == null) return .{ .x = -1000, .y = -1000, .w = 0, .h = 0 };
     return .{ .x = p.x + 12 + col * bw + 6, .y = p.y + 12, .w = bw - 12, .h = p.h - 24 };
+}
+fn popupLabel(i: i32) []const u8 {
+    if (editing_note) |k| return switch (i) {
+        0 => "Remove",
+        1 => if (book.notes[k].style == 0) "Highlight" else "Underline",
+        2 => "Copy to notes",
+        5 => if (book.notes[k].comment.len > 0) "Edit note" else "Add note",
+        else => "Cancel",
+    };
+    return switch (i) {
+        0 => "Underline",
+        1 => "Highlight",
+        2 => "Copy to notes",
+        4 => "Look up",
+        5 => "Note",
+        else => "Cancel",
+    };
 }
 
 // Offline dictionary modal. Parsed only after a single-word Define action.
@@ -2772,23 +2828,13 @@ fn drawPopup() void {
     const p = popupRect();
     fill(p.grow(6), 0xFF);
     frame(p, 4, 0x00);
-    const labels = if (editing_note != null)
-        [_][]const u8{ "Delete", if (book.notes[editing_note.?].style == 0) "Highlight" else "Underline", "Copy to notes", "Cancel" }
-    else
-        [_][]const u8{ "Underline", "Highlight", "Copy to notes", "Cancel" };
-    for (labels, 0..) |l, i| {
-        const r = popupButton(@intCast(i));
-        if (popupCount() == 5) {
-            fill(r, 0xFF);
-            frame(r, 3, 0);
-            textCenter(SANS, 28, r, l, 0);
-        } else button(r, l, false);
-    }
-    if (popupCount() == 5) {
-        const r = popupButton(4);
+    for (popupOrder()) |i| {
+        const r = popupButton(i);
+        const l = popupLabel(i);
         fill(r, 0xFF);
         frame(r, 3, 0);
-        textCenter(SANS, 28, r, "Define", 0);
+        const size: f32 = if (textW(SANS, 28, l) > @as(f32, @floatFromInt(r.w - 14))) 24 else 28;
+        textCenter(SANS, size, r, l, 0);
     }
 }
 
@@ -3128,7 +3174,7 @@ fn drawToc() void {
 }
 
 fn drawNotes() void {
-    header("Notes", true);
+    header("Highlights & notes", true);
     if (book.nnotes == 0) text(SANS, 34, 70, 300, "No notes yet. Long-press text to start one.", 0x33);
     const per = rowsPerPage();
     var i: usize = 0;
@@ -3143,7 +3189,12 @@ fn drawNotes() void {
         text(SANS, 28, @floatFromInt(r.x), @floatFromInt(r.y + 50), meta, 0x55);
         var q: [600]u8 = undefined;
         const qt = std.fmt.bufPrint(&q, "\xe2\x80\x9c{s}\xe2\x80\x9d", .{n.text[0..@min(n.text.len, 500)]}) catch n.text;
-        textFit(SERIF, 38, @floatFromInt(r.x), @floatFromInt(r.y + 112), qt, @floatFromInt(r.w), 0x00);
+        if (n.comment.len > 0) {
+            textFit(SERIF, 34, @floatFromInt(r.x), @floatFromInt(r.y + 96), qt, @floatFromInt(r.w), 0x00);
+            var cb: [600]u8 = undefined;
+            const ct = std.fmt.bufPrint(&cb, "Note: {s}", .{n.comment[0..@min(n.comment.len, 500)]}) catch n.comment;
+            textFit(SANS, 28, @floatFromInt(r.x), @floatFromInt(r.y + 136), ct, @floatFromInt(r.w), 0x33);
+        } else textFit(SERIF, 38, @floatFromInt(r.x), @floatFromInt(r.y + 112), qt, @floatFromInt(r.w), 0x00);
         rowSep(r);
     }
     pager(book.nnotes);
@@ -3349,6 +3400,154 @@ fn bookmarksLongPress(x: i32, y: i32) void {
     }
 }
 
+// ---- v0.9.6 note editor (compact on-screen keyboard) ----
+var note_edit_idx: usize = 0;
+var note_buf: [480]u8 = undefined;
+var note_len: usize = 0;
+var note_shift = false;
+const NOTE_PUNCT = ".,?!;:()\"/";
+fn noteKey(row: usize, col: usize) Rect {
+    const bw = @divTrunc(@as(i32, @intCast(W)) - 140, 10);
+    return .{ .x = 70 + @as(i32, @intCast(col)) * bw, .y = 600 + @as(i32, @intCast(row)) * 118, .w = bw - 10, .h = 104 };
+}
+fn noteField() Rect {
+    return .{ .x = 70, .y = 250, .w = @as(i32, @intCast(W)) - 140, .h = 320 };
+}
+fn noteControl(which: usize) Rect {
+    const y0: i32 = 600 + 5 * 118;
+    return switch (which) {
+        0 => .{ .x = 70, .y = y0, .w = 300, .h = 104 }, // Shift
+        1 => .{ .x = 390, .y = y0, .w = 492, .h = 104 }, // Space
+        2 => .{ .x = 902, .y = y0, .w = 300, .h = 104 }, // Backspace
+        3 => .{ .x = 70, .y = y0 + 130, .w = 300, .h = 104 }, // Clear
+        4 => .{ .x = 390, .y = y0 + 130, .w = 492, .h = 104 }, // Cancel
+        else => .{ .x = 902, .y = y0 + 130, .w = 300, .h = 104 }, // Save
+    };
+}
+fn noteKeyChar(row: usize, col: usize) ?u8 {
+    if (row < KEY_ROWS.len) return if (col < KEY_ROWS[row].len) KEY_ROWS[row][col] else null;
+    if (row == KEY_ROWS.len and col < NOTE_PUNCT.len) return NOTE_PUNCT[col];
+    return null;
+}
+fn noteAutoShift() bool {
+    const s = std.mem.trimEnd(u8, note_buf[0..note_len], " ");
+    return s.len == 0 or s[s.len - 1] == '.' or s[s.len - 1] == '?' or s[s.len - 1] == '!';
+}
+fn openNoteEditor(k: usize) void {
+    if (k >= book.nnotes) return;
+    note_edit_idx = k;
+    const c = book.notes[k].comment;
+    note_len = @min(c.len, note_buf.len);
+    @memcpy(note_buf[0..note_len], c[0..note_len]);
+    note_shift = noteAutoShift();
+    showScreen(.noteedit);
+}
+fn closeNoteEditor(save: bool) void {
+    if (save and note_edit_idx < book.nnotes) {
+        const n = &book.notes[note_edit_idx];
+        const t = std.mem.trim(u8, note_buf[0..note_len], " ");
+        const d = alloc.dupe(u8, t) catch return toast("Could not save note", .{});
+        alloc.free(n.comment);
+        n.comment = d;
+        saveNotes();
+        logf("note text saved: page {d} ({d} bytes)", .{ n.page + 1, d.len });
+        showScreen(.reader);
+        return toast("Note saved \xc2\xb7 p. {d}", .{n.page + 1});
+    }
+    showScreen(.reader);
+}
+fn drawWrapped(font: c_int, size: f32, r: Rect, s: []const u8, max_lines: usize, gray: u8) void {
+    // Shows the last max_lines wrapped lines so the end being typed stays visible.
+    var starts: [64]usize = undefined;
+    var ends: [64]usize = undefined;
+    var n: usize = 0;
+    var start: usize = 0;
+    const maxw: f32 = @floatFromInt(r.w - 40);
+    while (start <= s.len and n < starts.len) {
+        var end = start;
+        var last_space = start;
+        while (end < s.len) {
+            const step = std.unicode.utf8ByteSequenceLength(s[end]) catch 1;
+            const next = @min(end + step, s.len);
+            if (textW(font, size, s[start..next]) > maxw and end > start) break;
+            if (s[end] == ' ') last_space = end;
+            end = next;
+        }
+        if (end < s.len and last_space > start) end = last_space;
+        starts[n] = start;
+        ends[n] = end;
+        n += 1;
+        if (end >= s.len) break;
+        start = end;
+        while (start < s.len and s[start] == ' ') start += 1;
+    }
+    const first = if (n > max_lines) n - max_lines else 0;
+    var line: usize = 0;
+    for (first..n) |i| {
+        text(font, size, @floatFromInt(r.x + 20), @as(f32, @floatFromInt(r.y + 20)) + size * 1.25 * @as(f32, @floatFromInt(line + 1)), s[starts[i]..ends[i]], gray);
+        line += 1;
+    }
+}
+fn drawNoteEditor() void {
+    header("Note", true);
+    if (note_edit_idx < book.nnotes) {
+        const n = &book.notes[note_edit_idx];
+        var q: [600]u8 = undefined;
+        const qt = std.fmt.bufPrint(&q, "p. {d}  \xe2\x80\x9c{s}\xe2\x80\x9d", .{ n.page + 1, n.text[0..@min(n.text.len, 500)] }) catch n.text;
+        textFit(SERIF, 32, 70, 220, qt, @as(f32, @floatFromInt(W)) - 140, 0x55);
+    }
+    const f = noteField();
+    frame(f, 3, 0);
+    var tb: [484]u8 = undefined;
+    @memcpy(tb[0..note_len], note_buf[0..note_len]);
+    tb[note_len] = '|';
+    drawWrapped(SANS, 38, f, tb[0 .. note_len + 1], 5, 0);
+    for (0..KEY_ROWS.len + 1) |r| for (0..10) |c| {
+        const ch = noteKeyChar(r, c) orelse continue;
+        const shown = if (note_shift) std.ascii.toUpper(ch) else ch;
+        button(noteKey(r, c), &.{shown}, false);
+    };
+    button(noteControl(0), "Shift", note_shift);
+    button(noteControl(1), "Space", false);
+    button(noteControl(2), "Backspace", false);
+    button(noteControl(3), "Clear", false);
+    button(noteControl(4), "Cancel", false);
+    button(noteControl(5), "Save", true);
+    drawToast();
+}
+fn noteEditorTap(x: i32, y: i32) void {
+    if (topButton(true).contains(x, y) or noteControl(4).contains(x, y)) return closeNoteEditor(false);
+    if (noteControl(5).contains(x, y)) return closeNoteEditor(true);
+    if (noteControl(0).contains(x, y)) {
+        note_shift = !note_shift;
+        return markFull(WF_REAGL);
+    }
+    if (noteControl(3).contains(x, y)) {
+        note_len = 0;
+        note_shift = true;
+        return markFull(WF_REAGL);
+    }
+    if (noteControl(2).contains(x, y)) {
+        if (note_len > 0) {
+            note_len -= 1;
+            while (note_len > 0 and (note_buf[note_len] & 0xC0) == 0x80) note_len -= 1;
+        }
+        note_shift = noteAutoShift();
+        return markFull(WF_REAGL);
+    }
+    var ch: ?u8 = null;
+    if (noteControl(1).contains(x, y)) ch = ' ';
+    for (0..KEY_ROWS.len + 1) |r| for (0..10) |c| {
+        if (noteKey(r, c).contains(x, y)) ch = noteKeyChar(r, c);
+    };
+    const c = ch orelse return;
+    if (note_len >= note_buf.len - 1) return toast("Note is full", .{});
+    note_buf[note_len] = if (note_shift) std.ascii.toUpper(c) else c;
+    note_len += 1;
+    note_shift = c == ' ' and noteAutoShift();
+    markFull(WF_REAGL);
+}
+
 fn redraw() bool {
     if (sleep_phase != .awake) {
         drawSleeping();
@@ -3362,6 +3561,7 @@ fn redraw() bool {
         .device => drawDevice(),
         .upload => drawUpload(),
         .bookmarks => drawBookmarks(),
+        .noteedit => drawNoteEditor(),
         .reader => return drawReader(),
     }
     return true;
@@ -3584,15 +3784,26 @@ fn onTap(x: i32, y: i32, t_ev: u64) void {
         .device => deviceTap(x, y),
         .upload => uploadTap(x, y),
         .bookmarks => bookmarksTap(x, y, t_ev),
+        .noteedit => noteEditorTap(x, y),
     }
 }
 
 fn onReaderTap(x: i32, y: i32, t_ev: u64) void {
     if (dictionary_open) return definitionTap(x, y);
     if (popup_open) {
-        var i: i32 = 0;
-        while (i < popupCount()) : (i += 1) {
+        for (popupOrder()) |i| {
             if (popupButton(i).contains(x, y)) return popupAction(i);
+        }
+        // v0.9.6: with a fresh selection, tapping another word makes it the end word.
+        if (editing_note == null and sel_active) {
+            loadWords();
+            if (wordAt(x, y, false)) |w| {
+                const old = Rect.unite(selectionScreenRect(), popupRect().grow(10));
+                const anchor_word = sel_a;
+                sel_a = @min(anchor_word, w);
+                sel_b = @max(anchor_word, w);
+                return markDirty(Rect.unite(old, Rect.unite(selectionScreenRect(), popupRect().grow(10))), WF_REAGL);
+            }
         }
         return popupAction(3);
     }
@@ -3718,6 +3929,12 @@ fn popupAction(i: i32) void {
     if (i == 4 and editing_note == null and sel_active and sel_a == sel_b) return defineSelection();
     const region = Rect.unite(selectionScreenRect(), popupRect().grow(10));
     if (editing_note) |k| {
+        if (i == 5) {
+            editing_note = null;
+            popup_open = false;
+            sel_active = false;
+            return openNoteEditor(k);
+        }
         if (i == 0) {
             deleteNote(k);
             toast("Annotation deleted", .{});
@@ -3727,6 +3944,7 @@ fn popupAction(i: i32) void {
         } else if (i == 2 and book.nnotes < book.notes.len) {
             var n = book.notes[k];
             n.text = alloc.dupe(u8, n.text) catch return;
+            n.comment = alloc.dupe(u8, n.comment) catch &.{};
             n.style = 2;
             n.ts = zr_now_seconds();
             book.notes[book.nnotes] = n;
@@ -3740,13 +3958,16 @@ fn popupAction(i: i32) void {
         closeOverlayRefresh(Rect.full());
         return;
     }
-    if (i >= 0 and i <= 2 and book.nnotes < book.notes.len) {
+    const with_note = i == 5;
+    if (((i >= 0 and i <= 2) or with_note) and book.nnotes < book.notes.len) {
+        const style: usize = if (with_note) 1 else @intCast(i);
         var n: Note = undefined;
+        n.comment = &.{};
         n.anchor = .{};
         n.unresolved = false;
         if (book.reflow and zr_anchor_words(book.doc, pool.cur, @intCast(@min(sel_a, sel_b)), @intCast(@max(sel_a, sel_b)), &n.anchor) == 0) n.unresolved = true;
         n.page = pool.cur;
-        n.style = @intCast(i);
+        n.style = @intCast(style);
         n.ts = zr_now_seconds();
         var tb: [8192]u8 = undefined;
         n.text = alloc.dupe(u8, selectionText(&tb)) catch &.{};
@@ -3754,8 +3975,13 @@ fn popupAction(i: i32) void {
         book.notes[book.nnotes] = n;
         book.nnotes += 1;
         saveNotes();
-        if (n.unresolved) toast("Saved text / location unresolved", .{}) else toast("Saved {s} \xc2\xb7 p. {d}", .{ STYLE_NAMES[@intCast(i)], pool.cur + 1 });
-        logf("note saved: page {d} {s} ({d} quads)", .{ n.page + 1, STYLE_NAMES[@intCast(i)], n.nq });
+        logf("note saved: page {d} {s} ({d} quads)", .{ n.page + 1, STYLE_NAMES[style], n.nq });
+        if (with_note) {
+            sel_active = false;
+            popup_open = false;
+            return openNoteEditor(book.nnotes - 1);
+        }
+        if (n.unresolved) toast("Saved text / location unresolved", .{}) else toast("Saved {s} \xc2\xb7 p. {d}", .{ STYLE_NAMES[style], pool.cur + 1 });
     }
     sel_active = false;
     popup_open = false;
@@ -3943,7 +4169,16 @@ fn onUp(t: u64) void {
         return;
     }
     if (sel_active and gs.long_fired) {
+        // v0.9.6: a plain tap that landed on a handle's generous hit area
+        // still means "make this word the end word".
+        const tapped_handle = dragging_handle != .none and !gs.moved and editing_note == null;
         dragging_handle = .none;
+        if (tapped_handle) {
+            loadWords();
+            if (wordAt(gs.x0, gs.y0, false)) |w| {
+                if (w < sel_a) sel_a = w else sel_b = w;
+            }
+        }
         popup_open = true;
         markDirty(Rect.unite(selectionScreenRect(), popupRect().grow(10)), WF_REAGL);
         return;
@@ -5025,13 +5260,13 @@ test "Define is offered only for one selected word; dictionary gestures cannot t
     editing_note = null;
     sel_a = 1;
     sel_b = 1;
-    try std.testing.expectEqual(@as(i32, 5), popupCount());
+    try std.testing.expectEqual(@as(i32, 6), popupCount());
     try std.testing.expect(popupButton(4).x < popupButton(3).x);
     sel_b = 2;
-    try std.testing.expectEqual(@as(i32, 4), popupCount());
+    try std.testing.expectEqual(@as(i32, 5), popupCount());
     sel_b = 1;
     editing_note = 0;
-    try std.testing.expectEqual(@as(i32, 4), popupCount());
+    try std.testing.expectEqual(@as(i32, 5), popupCount());
     dictionary_open = true;
     const cur = pool.cur;
     const pan = pool.pan_x;
@@ -5286,7 +5521,7 @@ fn markdownHeader(b: *Buf, title: []const u8) void {
     markdownText(b, title);
     b.put("\n\n");
 }
-fn markdownNote(b: *Buf, page: i32, style: usize, passage: []const u8, a: Anchor, unresolved: bool) void {
+fn markdownNote(b: *Buf, page: i32, style: usize, passage: []const u8, a: Anchor, unresolved: bool, comment: []const u8) void {
     b.print("## {s} / Page {d}\n\n", .{ STYLE_LABELS[@min(style, 2)], page + 1 });
     if (unresolved) b.put("Location unresolved; original passage retained.\n\n") else if (a.chapter >= 0) b.print("Chapter {d}, text offsets {d}-{d}.\n\n", .{ a.chapter + 1, a.start, a.end });
     var lines = std.mem.splitScalar(u8, passage, '\n');
@@ -5296,6 +5531,11 @@ fn markdownNote(b: *Buf, page: i32, style: usize, passage: []const u8, a: Anchor
         b.put("\n");
     }
     b.put("\n");
+    if (comment.len > 0) {
+        b.put("**Note:** ");
+        markdownText(b, comment);
+        b.put("\n\n");
+    }
 }
 fn writeMarkdown(title: []const u8, b: *Buf) bool {
     if (title.len == 0 or std.mem.indexOfScalar(u8, title, '/') != null) return false;
@@ -5313,7 +5553,7 @@ fn exportCurrentNotes() void {
     const nb = notesBase(&base);
     const title = if (std.mem.lastIndexOfScalar(u8, nb, '/')) |i| nb[i + 1 ..] else nb;
     markdownHeader(&b, book.nameS());
-    for (book.notes[0..book.nnotes]) |*n| markdownNote(&b, n.page, n.style, n.text, n.anchor, n.unresolved);
+    for (book.notes[0..book.nnotes]) |*n| markdownNote(&b, n.page, n.style, n.text, n.anchor, n.unresolved, n.comment);
     if (!writeMarkdown(title, &b)) logf("Markdown export failed: {s}", .{title});
 }
 fn exportJson(title: []const u8, data: []const u8) bool {
@@ -5334,12 +5574,29 @@ fn exportJson(title: []const u8, data: []const u8) bool {
         for (STYLE_NAMES, 0..) |name, i| if (eql(style, name)) {
             sn = i;
         };
-        markdownNote(&b, @as(i32, @intFromFloat(page)) - 1, sn, t, readAnchor(obj), (jsonNum(obj, "anchor_unresolved") orelse 0) != 0);
+        var cbuf: [4096]u8 = undefined;
+        const cm = jsonStr(obj, "comment", &cbuf) orelse "";
+        markdownNote(&b, @as(i32, @intFromFloat(page)) - 1, sn, t, readAnchor(obj), (jsonNum(obj, "anchor_unresolved") orelse 0) != 0, cm);
+    }
+    if (all_export) |ab| {
+        if (ab.n > 0) ab.put("\n");
+        ab.put(b.slice());
     }
     return writeMarkdown(title, &b);
 }
 const ExportStats = struct { books: usize = 0, errors: usize = 0 };
+var all_export: ?*Buf = null;
+const ALL_EXPORT_TITLE = "All books - highlights and notes";
 fn exportAllNotes() ExportStats {
+    var ab = Buf.init(16384);
+    defer ab.deinit();
+    all_export = &ab;
+    defer all_export = null;
+    const r = exportAllNotesInner();
+    if (ab.n > 0 and !writeMarkdown(ALL_EXPORT_TITLE, &ab)) logf("Markdown export failed: all books", .{});
+    return r;
+}
+fn exportAllNotesInner() ExportStats {
     var result: ExportStats = .{};
     var path: [1400]u8 = undefined;
     const z = std.fmt.bufPrintSentinel(&path, "{s}/notes", .{opts.data}, 0) catch return result;
@@ -5424,7 +5681,7 @@ test "Markdown export all escapes book text, keeps locations, rejects corrupt in
     try std.testing.expectEqualStrings("# First\n\n", empty);
     var b = Buf.init(256);
     defer b.deinit();
-    markdownNote(&b, 11, 0, "text", .{ .chapter = 2, .start = 42, .end = 46, .hash = 1 }, false);
+    markdownNote(&b, 11, 0, "text", .{ .chapter = 2, .start = 42, .end = 46, .hash = 1 }, false, "");
     try std.testing.expect(std.mem.indexOf(u8, b.slice(), "Chapter 3, text offsets 42-46.") != null);
 }
 

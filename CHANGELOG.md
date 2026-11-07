@@ -2,6 +2,10 @@
 
 Earlier versions were early prototypes and are not listed.
 
+## 0.9.6
+
+Highlights and notes, with export: long-press a word, then drag or tap the end word (EPUB text and PDFs with a text layer, including OCR scans). The popup offers Highlight, Underline, Note, Look up (single word, offline dictionary), Copy to notes and Cancel. Note saves a highlight and opens a compact on-screen keyboard. Tapping a highlight offers Edit note, Remove, change style, Copy to notes and Cancel. The menu’s Notes button opens “Highlights & notes” (page, style, date, passage, note; tap to jump, long-press to delete). Highlights are drawn with the normal page update and never stored in the page cache; pages without them are unchanged. Export: the Upload screen’s web page offers each book’s highlights and notes, plus an all-books file, as Markdown or plain text while the screen is open, and the same files are kept in `export/` on the Kindle for USB. Nothing is sent anywhere automatically.
+
 ## 0.9.5
 
 Bookmarks: “Bookmark” / “Unbookmark” in the PDF menu’s second row and a “Bookmarks” button for PDF and EPUB. The Bookmarks screen lists them in page order with the date and the first words of the page; tap to jump, long-press to delete, and its bottom button bookmarks or un-bookmarks the current page. A bookmarked page shows a small ribbon at the top right, drawn with the normal page update (no extra flash). Bookmarks are stored per book on the Kindle and EPUB bookmarks follow reflow. Pages without a bookmark look exactly as before. `--version` now prints the correct version.

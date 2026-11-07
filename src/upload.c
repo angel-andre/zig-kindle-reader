@@ -23,10 +23,11 @@
 #include <ctype.h>
 #include <errno.h>
 #include <time.h>
+#include <dirent.h>
 
 static pthread_mutex_t um=PTHREAD_MUTEX_INITIALIZER;
 static pthread_t uth;static int running,stop_flag,lfd=-1,firewall_open,uport,client=-1;
-static char books[1100];static uint64_t max_bytes,min_free;
+static char books[1100],exportdir[1200];static uint64_t max_bytes,min_free;
 static char status[256]="Starting";static unsigned revision,saved;
 
 static void set_status(const char *fmt,const char *a,long long b){pthread_mutex_lock(&um);snprintf(status,sizeof status,fmt,a,b);revision++;pthread_mutex_unlock(&um);}
@@ -57,6 +58,41 @@ const char *zr_up_check_name(const char *raw,char *out,size_t cap){
  if(dot==d)return "name not allowed";
  if(strlen(d)>=cap)return "bad name length";strcpy(out,d);return 0;}
 
+/* v0.9.6: highlights/notes download (Markdown files the reader just wrote to
+ * DATA/export). Read-only, .md names only, no paths; served only while the
+ * Upload screen is open, like the upload page itself. */
+void zr_up_set_export(const char *dir){pthread_mutex_lock(&um);snprintf(exportdir,sizeof exportdir,"%s",dir);pthread_mutex_unlock(&um);}
+static int export_name(const char *raw,char *out,size_t cap){char d[512];size_t n=0;
+ for(const char *s=raw;*s&&*s!='?'&&n<sizeof d-1;s++){if(*s=='%'&&isxdigit((unsigned char)s[1])&&isxdigit((unsigned char)s[2])){char h[3]={s[1],s[2],0};d[n++]=(char)strtol(h,0,16);s+=2;}else d[n++]=*s;}
+ d[n]=0;if(!n||n>240||d[0]=='.'||strstr(d,"..")||strchr(d,'/')||strchr(d,'\\'))return -1;
+ for(size_t i=0;i<n;i++)if((unsigned char)d[i]<0x20)return -1;
+ if(n<4||strcmp(d+n-3,".md"))return -1;if(n>=cap)return -1;strcpy(out,d);return 0;}
+static void html_esc(char *o,size_t cap,const char *s){size_t n=0;for(;*s&&n+7<cap;s++){const char *r=0;if(*s=='&')r="&amp;";else if(*s=='<')r="&lt;";else if(*s=='>')r="&gt;";else if(*s=='"')r="&quot;";else if(*s=='\'')r="&#39;";
+ if(r){size_t l=strlen(r);memcpy(o+n,r,l);n+=l;}else o[n++]=*s;}o[n]=0;}
+static void url_esc(char *o,size_t cap,const char *s){size_t n=0;for(;*s&&n+4<cap;s++){unsigned char c=(unsigned char)*s;if(isalnum(c)||c=='-'||c=='_'||c=='.'||c=='~')o[n++]=(char)c;else n+=(size_t)snprintf(o+n,cap-n,"%%%02X",c);}o[n]=0;}
+static int cmpstr(const void *a,const void *b){return strcmp(*(char*const*)a,*(char*const*)b);}
+/* Appends the download list to buf (NUL-terminated, cap bytes). */
+static void export_list(char *buf,size_t cap){char dir[1200];pthread_mutex_lock(&um);snprintf(dir,sizeof dir,"%s",exportdir);pthread_mutex_unlock(&um);
+ size_t n=strlen(buf);n+=(size_t)snprintf(buf+n,cap-n,"<h2>Highlights and notes</h2>");
+ DIR *d=dir[0]?opendir(dir):0;char *names[400];int k=0;
+ if(d){struct dirent *e;while((e=readdir(d))&&k<400){size_t l=strlen(e->d_name);if(l>3&&e->d_name[0]!='.'&&!strcmp(e->d_name+l-3,".md"))names[k++]=strdup(e->d_name);}closedir(d);}
+ if(!k){snprintf(buf+n,cap-n,"<p>No highlights or notes yet.</p>");return;}
+ qsort(names,(size_t)k,sizeof *names,cmpstr);
+ n+=(size_t)snprintf(buf+n,cap-n,"<p>Markdown (.md) or plain text (.txt); each file is one book. Nothing is sent anywhere unless you download it.</p><ul>");
+ for(int pass=0;pass<2;pass++)for(int i=0;i<k;i++){int all=!strncmp(names[i],"All books - ",12);if(all!=!pass)continue;
+  char h[800],u[1400],t[300];size_t l=strlen(names[i]);snprintf(t,sizeof t,"%.*s",(int)(l-3),names[i]);html_esc(h,sizeof h,t);url_esc(u,sizeof u,names[i]);
+  if(n+3000<cap)n+=(size_t)snprintf(buf+n,cap-n,"<li>%s%s%s: <a href='/export/%s'>Markdown</a> &middot; <a href='/export/%s?txt'>Text</a></li>",all?"<b>":"",h,all?"</b>":"",u,u);}
+ snprintf(buf+n,cap-n,"</ul>");for(int i=0;i<k;i++)free(names[i]);}
+static void send_export(int c,const char *target){char name[256],path[1500];
+ if(export_name(target+8,name,sizeof name)){const char *m="not found";char h[300];int n=snprintf(h,sizeof h,"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",strlen(m));if(write(c,h,(size_t)n)>0&&write(c,m,strlen(m))){}return;}
+ int txt=strchr(target,'?')&&!strcmp(strchr(target,'?'),"?txt");
+ pthread_mutex_lock(&um);snprintf(path,sizeof path,"%s/%s",exportdir,name);pthread_mutex_unlock(&um);
+ int fd=open(path,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);struct stat st;
+ if(fd<0||fstat(fd,&st)||!S_ISREG(st.st_mode)){if(fd>=0)close(fd);const char *m="not found";char h[300];int n=snprintf(h,sizeof h,"HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: %zu\r\nConnection: close\r\n\r\n",strlen(m));if(write(c,h,(size_t)n)>0&&write(c,m,strlen(m))){}return;}
+ char base[256];snprintf(base,sizeof base,"%.*s%s",(int)(strlen(name)-3),name,txt?".txt":".md");char ub[800];url_esc(ub,sizeof ub,base);
+ char h[1400];int n=snprintf(h,sizeof h,"HTTP/1.1 200 OK\r\nContent-Type: %s; charset=utf-8\r\nContent-Length: %lld\r\nContent-Disposition: attachment; filename*=UTF-8''%s\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",txt?"text/plain":"text/markdown",(long long)st.st_size,ub);
+ if(write(c,h,(size_t)n)<0){close(fd);return;}char b[16384];ssize_t k;while((k=read(fd,b,sizeof b))>0){if(write(c,b,(size_t)k)!=k)break;}close(fd);}
+
 uint64_t zr_up_free(const char *path){struct statvfs st;if(statvfs(path,&st))return 0;return (uint64_t)st.f_bavail*st.f_frsize;}
 
 static const char PAGE[]="<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'><title>Zigg Reader upload</title>"
@@ -64,7 +100,7 @@ static const char PAGE[]="<!doctype html><html><head><meta name=viewport content
 "<h2>Send books to the Kindle</h2><p>PDF or EPUB only. Books go into the Books folder.</p>"
 "<input type=file id=f multiple accept='.pdf,.epub'><p><button onclick='go()'>Upload</button></p><pre id=s></pre>"
 "<script>async function go(){const s=document.getElementById('s');for(const f of document.getElementById('f').files){s.textContent+=f.name+': sending...\\n';"
-"try{const r=await fetch('/upload?name='+encodeURIComponent(f.name),{method:'POST',body:f});s.textContent+=f.name+': '+(await r.text())+'\\n';}catch(e){s.textContent+=f.name+': failed\\n';}}}</script></body></html>";
+"try{const r=await fetch('/upload?name='+encodeURIComponent(f.name),{method:'POST',body:f});s.textContent+=f.name+': '+(await r.text())+'\\n';}catch(e){s.textContent+=f.name+': failed\\n';}}}</script>";
 
 static void reply(int c,int code,const char *msg,const char *type,const char *body){char h[400];size_t bl=strlen(body);
  int n=snprintf(h,sizeof h,"HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %zu\r\nConnection: close\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n",code,msg,type,bl);
@@ -76,7 +112,8 @@ static void handle(int c){
  while(n<sizeof hdr-1){ssize_t k=read(c,hdr+n,sizeof hdr-1-n);if(k<=0)return;n+=(size_t)k;hdr[n]=0;if((end=strstr(hdr,"\r\n\r\n")))break;}
  if(!end){reply(c,431,"Header Too Large","text/plain","header too large");return;}
  char method[8]="",target[1100]="";if(sscanf(hdr,"%7s %1099s",method,target)!=2){reply(c,400,"Bad Request","text/plain","bad request");return;}
- if(!strcmp(method,"GET")&&(!strcmp(target,"/")||!strncmp(target,"/?",2))){reply(c,200,"OK","text/html; charset=utf-8",PAGE);return;}
+ if(!strcmp(method,"GET")&&(!strcmp(target,"/")||!strncmp(target,"/?",2))){static char page[262144];snprintf(page,sizeof page,"%s",PAGE);export_list(page,sizeof page-32);strcat(page,"</body></html>");reply(c,200,"OK","text/html; charset=utf-8",page);return;}
+ if(!strcmp(method,"GET")&&!strncmp(target,"/export/",8)){send_export(c,target);return;}
  if(strcmp(method,"POST")||strncmp(target,"/upload?name=",13)){reply(c,404,"Not Found","text/plain","not found");return;}
  char name[256];const char *why=zr_up_check_name(target+13,name,sizeof name);
  if(why){set_status("Refused a file: %s",why,0);reply(c,400,"Bad Request","text/plain",why);return;}

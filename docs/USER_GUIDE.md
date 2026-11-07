@@ -23,11 +23,23 @@ PDF views: fit page, cropped fit width, 1.5× and 2×. Fit-width navigation step
 
 EPUBs offer nine text sizes, adjustable margins and line spacing 1.15/1.40/1.70. Chapter/text anchors relocate notes and reading positions after reflow. When relocation cannot be trusted, a passage remains in Notes/export as unresolved instead of marking unrelated text.
 
-## Selection and annotations
+## Highlights & notes
 
-Long-press a word and drag to select. Refine either endpoint with its handle after lifting. Choose Underline, Highlight, Copy to notes or Cancel. A single-word selection also offers Define.
+**Selecting.** Long-press a word to start, then drag to the end word, or lift and tap the end word. Either endpoint can be refined with its handle. This works on EPUB text and on PDFs with a text layer, including OCR'd scans such as Internet Archive books; pages without any text layer can't be selected.
 
-Tap an existing mark to Delete, Change style or Copy to notes. The Notes list jumps to passages; long-press a note to delete it. Deletion rewrites all derived exports, not just the visible overlay.
+**Popup.** Highlight, Underline, Note, Look up (single-word selections only; the offline dictionary), Copy to notes and Cancel. Tapping outside the popup, away from text, cancels.
+
+**Notes and the keyboard.** Note saves the passage as a highlight and opens a compact on-screen keyboard: digits, letters, punctuation, Shift, Space, Backspace, Clear, Cancel and Save. The first letter, and the letter after . ? or !, is capitalised automatically. Cancel keeps the highlight without note text. The keyboard is English only (no accented letters).
+
+**Editing.** Tap an existing highlight or underline for Edit note (Add note if it has none), Remove, switching between underline and highlight, Copy to notes or Cancel.
+
+**Display.** Highlights are drawn with the normal page update (no extra flash) and are never stored in the saved-page cache; pages without highlights look exactly as before.
+
+**List.** The menu's Notes button opens “Highlights & notes”: page, style, date, the passage and its note. Tap an entry to jump to it; long-press to delete it. Deletion rewrites all exports, not just the visible overlay.
+
+**Storage.** Highlights and notes are saved per book in `notes/<book>.json` on the Kindle (the note text is an optional `comment` field). EPUB entries keep a text anchor, so they stay on the same passage after changing text size, margins or spacing.
+
+**Export.** Markdown files are kept in `/mnt/us/zreader/export/`: one `<book>.md` per book and `All books - highlights and notes.md`. They are rewritten whenever notes change, on Export all, and when the Upload screen opens, and can be copied over USB. While the Upload screen is open, its web page (the same address used to send books) also lists every book plus the all-books file, each as Markdown or plain text, for download. The download list is read-only and disappears with the upload page when you leave the screen. Nothing is sent anywhere automatically.
 
 `Copy to notes` stores the passage in this reader's notes. It is not a system-wide clipboard integration.
 
