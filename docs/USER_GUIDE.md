@@ -49,6 +49,16 @@ WordNet 3.0 is offline English vocabulary with paginated senses and basic inflec
 
 Search uses an English keyboard and MuPDF text matching; it scans incrementally and can be stopped. Up to 200 hits are kept. Tap a result to navigate and briefly mark the hit. No OCR and no guarantee for cross-page phrases or broken PDF text order.
 
+## Reading stats (0.9.7)
+
+Everything stays on the Kindle; nothing is sent anywhere and stats are not part of the export.
+
+- **What counts.** Only active reading: a book page is on screen, the menu is closed, the Kindle is awake, and the last page turn was less than 2.5 minutes ago. Leaving a page open and walking away stops the timer after 2.5 minutes.
+- **Per book.** Time read, pages read (forward page turns), sessions (each time the book is opened), first and last opened, percent, and finished (reaching the last page). EPUBs also show an estimate of the time left at your own pace once there is enough data. This line is shown next to the title on the Contents screen.
+- **Overall.** Settings › **Reading stats** shows today, the last 7 days and all-time reading time, books finished, the day streak (consecutive days with at least a minute of reading, ending today or yesterday), a 7-day grey bar chart (today in black) and the five most recently read books.
+- **Reset.** **Reset stats** on that screen asks for a second tap within 5 seconds, then erases all stats.
+- **Storage.** `state/stats.tsv`: one line per book and one per day (the last 400 days). It is written at most once a minute and when a book is closed, on sleep and on exit, never on every page and never while a page is rendering.
+
 ## Library and device controls
 
 Recent → Title → Progress cycles sorting. Folder selects relative subfolders; All resets it. Covers are generated lazily only for visible rows; unavailable/complex covers get placeholders. The disk cache is capped at 10 MiB, with 32 thumbnails in RAM. Changed files refresh on a later session, not via a live watcher. Since 0.8.0 cached covers load on a separate worker, new covers show a title/type placeholder immediately, and the next library page is prefetched. The header shows free/total storage and total book size; each row shows type (PDF/EPUB) and file size. A battery bar with percentage sits top-right in the library only (read-only, polled at most every three minutes, no extra refresh). Since 0.9.0 it is never drawn while a book is open, so it cannot cover text.

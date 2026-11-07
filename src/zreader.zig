@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.9.6";
+const VERSION = "0.9.7";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 
 // ---------------- C ----------------
@@ -504,6 +504,7 @@ const Opts = struct {
     clean_scans: bool = true,
     clean_cli: bool = false,
     upload_port: u16 = 8080,
+    stats_idle_sec: u32 = 150,
     upload_min_free_mib: u64 = 6144,
     upload_max_mib: u64 = 500,
     sim: ?[*:0]const u8 = null,
@@ -1111,6 +1112,7 @@ fn turnView(direction: i32, t: u64) void {
             popup_open = false;
             t_tap = t;
             tap_pending_measure = t != 0;
+            stats_last_activity = nowUs();
             logf("PDF slice: page={d} step={d}/{d}", .{ pool.cur + 1, step + 1, g.steps });
             return;
         }
@@ -1683,6 +1685,7 @@ fn pcSameAsPreview() bool {
 
 fn closeBook() void {
     if (!book.open) return;
+    statsCloseBook();
     pcCaptureNow();
     stopWorkers();
     saveState();
@@ -1821,6 +1824,7 @@ fn openBook(path: []const u8) bool {
     search_hit = null;
     loadNotes();
     loadBookmarks();
+    statsOpenBook();
     if (book.reflow) {
         const migrated = if (book.nnotes > 0) migrateNotes() else false;
         const position = if (st.anchor.chapter >= 0) st.anchor else if (!st.typography or book.nnotes > 0) pageAnchor(pool.cur) else Anchor{};
@@ -2021,8 +2025,12 @@ fn changeLight(i: usize, value: i32) void {
     logf("light change: {d}={d}{s}", .{ i, v, if (opts.sim != null) " simulated" else " queued" });
     markFull(WF_REAGL);
 }
+fn statsButton() Rect {
+    return .{ .x = 560, .y = 40, .w = 420, .h = 90 };
+}
 fn drawDevice() void {
     header("Settings", true);
+    button(statsButton(), "Reading stats", false);
     for (0..2) |i| {
         var b: [100]u8 = undefined;
         const label = if (light_values[i] < 0) std.fmt.bufPrint(&b, "{s}: unavailable", .{if (i == 0) "Frontlight" else "Warmth"}) catch "" else std.fmt.bufPrint(&b, "{s}: {d} / 24", .{ if (i == 0) "Frontlight" else "Warmth", light_values[i] }) catch "";
@@ -2130,6 +2138,7 @@ fn configureSleep(on: bool) bool {
 }
 fn deviceTap(x: i32, y: i32) void {
     if (topButton(true).contains(x, y)) return showScreen(device_return);
+    if (statsButton().contains(x, y)) return openStats();
     if (uploadButton().contains(x, y)) return showScreen(.upload);
     if (cleanButton().contains(x, y)) {
         opts.clean_scans = !opts.clean_scans;
@@ -2165,6 +2174,7 @@ fn beginSleep(external: bool) void {
     if (screen == .upload) showScreen(.library);
     pcCaptureNow();
     saveState();
+    statsSave();
     search_running = false;
     gs.down = false;
     gs.long_fired = false;
@@ -2344,7 +2354,7 @@ fn scanLibrary() void {
 }
 
 // ---------------- UI state ----------------
-const Screen = enum { library, reader, toc, notes, search, device, upload, bookmarks, noteedit };
+const Screen = enum { library, reader, toc, notes, search, device, upload, bookmarks, noteedit, stats };
 var screen: Screen = .library;
 var menu_open = false;
 var popup_open = false;
@@ -3151,6 +3161,7 @@ fn drawLibrary() void {
 fn drawToc() void {
     loadToc();
     header("Contents", true);
+    drawBookStatsLine(430, 95);
     if (book.ntoc == 0) text(SANS, 34, 70, 300, "This book has no table of contents.", 0x33);
     const per = rowsPerPage();
     var i: usize = 0;
@@ -3548,6 +3559,327 @@ fn noteEditorTap(x: i32, y: i32) void {
     markFull(WF_REAGL);
 }
 
+// ---- v0.9.7 reading stats (device only) ----
+// DATA/state/stats.tsv: "b <id> secs pages sessions first last pct finished"
+// per book (id = same hash as the state file) and "d <day> secs" per local
+// day. Active time only counts while a page is on screen in the reader, the
+// menu is closed, the device is awake and the last page turn is recent.
+// Saved at most once a minute (and on close/sleep/exit), never per page.
+const BookStat = struct { id: u64, secs: u32 = 0, pages: u32 = 0, sessions: u32 = 0, first: i64 = 0, last: i64 = 0, pct: u8 = 0, finished: i64 = 0 };
+const DayStat = struct { day: i32, secs: u32 };
+var bstats: [4000]BookStat = undefined;
+var nbstats: usize = 0;
+var dstats: [400]DayStat = undefined;
+var ndstats: usize = 0;
+var stats_loaded = false;
+var stats_dirty = false;
+var stats_last_save: u64 = 0;
+var stats_last_activity: u64 = 0;
+var stats_prev_tick: u64 = 0;
+var stats_frac_us: u64 = 0;
+var stats_cur: ?usize = null;
+var stats_confirm_until: u64 = 0;
+var stats_return: Screen = .device;
+fn statsPath(out: []u8) []const u8 {
+    return std.fmt.bufPrint(out, "{s}/state/stats.tsv", .{opts.data}) catch "";
+}
+fn localDay(t: i64) i32 {
+    var tm: Tm = undefined;
+    if (zr_localtime64(&t, &tm) == null) return @intCast(@divFloor(t, 86400));
+    // days from civil (Howard Hinnant)
+    var y: i64 = tm.year + 1900;
+    const m: i64 = tm.mon + 1;
+    const d: i64 = tm.mday;
+    if (m <= 2) y -= 1;
+    const era = @divFloor(y, 400);
+    const yoe = y - era * 400;
+    const mp = @mod(m + 9, 12);
+    const doy = @divFloor(153 * mp + 2, 5) + d - 1;
+    const doe = yoe * 365 + @divFloor(yoe, 4) - @divFloor(yoe, 100) + doy;
+    return @intCast(era * 146097 + doe - 719468);
+}
+fn statsLoad() void {
+    if (stats_loaded) return;
+    stats_loaded = true;
+    nbstats = 0;
+    ndstats = 0;
+    var pb: [1200]u8 = undefined;
+    var zb: [1200]u8 = undefined;
+    const z = std.fmt.bufPrintSentinel(&zb, "{s}", .{statsPath(&pb)}, 0) catch return;
+    const data = readFile(z) orelse return;
+    defer alloc.free(data);
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        var f = std.mem.splitScalar(u8, line, '\t');
+        const kind = f.next() orelse continue;
+        if (eql(kind, "b") and nbstats < bstats.len) {
+            var s: BookStat = .{ .id = std.fmt.parseInt(u64, f.next() orelse continue, 16) catch continue };
+            s.secs = std.fmt.parseInt(u32, f.next() orelse "0", 10) catch 0;
+            s.pages = std.fmt.parseInt(u32, f.next() orelse "0", 10) catch 0;
+            s.sessions = std.fmt.parseInt(u32, f.next() orelse "0", 10) catch 0;
+            s.first = std.fmt.parseInt(i64, f.next() orelse "0", 10) catch 0;
+            s.last = std.fmt.parseInt(i64, f.next() orelse "0", 10) catch 0;
+            s.pct = std.fmt.parseInt(u8, f.next() orelse "0", 10) catch 0;
+            s.finished = std.fmt.parseInt(i64, f.next() orelse "0", 10) catch 0;
+            bstats[nbstats] = s;
+            nbstats += 1;
+        } else if (eql(kind, "d") and ndstats < dstats.len) {
+            const day = std.fmt.parseInt(i32, f.next() orelse continue, 10) catch continue;
+            const secs = std.fmt.parseInt(u32, f.next() orelse "0", 10) catch 0;
+            dstats[ndstats] = .{ .day = day, .secs = secs };
+            ndstats += 1;
+        }
+    }
+    std.mem.sort(DayStat, dstats[0..ndstats], {}, struct {
+        fn lt(_: void, x: DayStat, y: DayStat) bool {
+            return x.day < y.day;
+        }
+    }.lt);
+}
+fn statsSave() void {
+    if (!stats_loaded or !stats_dirty) return;
+    var b = Buf.init(4096);
+    defer b.deinit();
+    b.put("zrstats\t1\n");
+    for (bstats[0..nbstats]) |s| b.print("b\t{x:0>16}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\t{d}\n", .{ s.id, s.secs, s.pages, s.sessions, s.first, s.last, s.pct, s.finished });
+    for (dstats[0..ndstats]) |d| b.print("d\t{d}\t{d}\n", .{ d.day, d.secs });
+    var pb: [1200]u8 = undefined;
+    if (writeFileAtomic(statsPath(&pb), b.slice())) {
+        stats_dirty = false;
+        stats_last_save = nowUs();
+    }
+}
+fn statsFor(id: u64, create: bool) ?usize {
+    for (bstats[0..nbstats], 0..) |s, i| if (s.id == id) return i;
+    if (!create or nbstats >= bstats.len) return null;
+    bstats[nbstats] = .{ .id = id };
+    nbstats += 1;
+    return nbstats - 1;
+}
+fn statsAddDay(secs: u32) void {
+    const today = localDay(zr_now_seconds());
+    if (ndstats > 0 and dstats[ndstats - 1].day == today) {
+        dstats[ndstats - 1].secs +|= secs;
+        return;
+    }
+    if (ndstats == dstats.len) {
+        std.mem.copyForwards(DayStat, dstats[0 .. ndstats - 1], dstats[1..ndstats]);
+        ndstats -= 1;
+    }
+    dstats[ndstats] = .{ .day = today, .secs = secs };
+    ndstats += 1;
+}
+fn statsOpenBook() void {
+    statsLoad();
+    stats_cur = statsFor(fnv(book.pathS()), true);
+    const now = zr_now_seconds();
+    if (stats_cur) |i| {
+        const s = &bstats[i];
+        s.sessions += 1;
+        if (s.first == 0) s.first = now;
+        s.last = now;
+        statsUpdatePct(s, pool.cur);
+    }
+    stats_last_activity = nowUs();
+    stats_prev_tick = nowUs();
+    stats_frac_us = 0;
+    stats_dirty = true;
+}
+fn statsUpdatePct(s: *BookStat, cur: i32) void {
+    if (pool.npages <= 0) return;
+    s.pct = @intCast(std.math.clamp(@divTrunc((cur + 1) * 100, pool.npages), 0, 100));
+    if (cur >= pool.npages - 1 and pool.npages > 1 and s.finished == 0 and (!book.reflow or !pool.paginating)) s.finished = zr_now_seconds();
+}
+fn statsPageTurn(old: i32, new: i32) void {
+    stats_last_activity = nowUs();
+    const i = stats_cur orelse return;
+    if (new == old) return;
+    const s = &bstats[i];
+    if (new > old) s.pages += 1;
+    statsUpdatePct(s, new);
+    s.last = zr_now_seconds();
+    stats_dirty = true;
+}
+fn statsActive(now: u64) bool {
+    return book.open and stats_cur != null and screen == .reader and !menu_open and sleep_phase == .awake and
+        now -| stats_last_activity < @as(u64, opts.stats_idle_sec) * 1_000_000;
+}
+fn statsTick(last_input: u64) void {
+    _ = last_input;
+    const now = nowUs();
+    const dt = @min(now -| stats_prev_tick, 2_000_000);
+    stats_prev_tick = now;
+    if (statsActive(now)) {
+        stats_frac_us += dt;
+        if (stats_frac_us >= 1_000_000) {
+            const secs: u32 = @intCast(stats_frac_us / 1_000_000);
+            stats_frac_us -= @as(u64, secs) * 1_000_000;
+            bstats[stats_cur.?].secs +|= secs;
+            statsAddDay(secs);
+            stats_dirty = true;
+        }
+    }
+    if (stats_dirty and now -| stats_last_save > 60_000_000 and !need_page and !in_flight) statsSave();
+}
+fn statsCloseBook() void {
+    if (stats_cur) |i| bstats[i].last = zr_now_seconds();
+    stats_cur = null;
+    stats_dirty = true;
+    statsSave();
+}
+fn fmtDur(secs: u64, out: []u8) []const u8 {
+    if (secs < 60) return std.fmt.bufPrint(out, "{d}s", .{secs}) catch "";
+    const m = secs / 60;
+    if (m < 60) return std.fmt.bufPrint(out, "{d}m", .{m}) catch "";
+    return std.fmt.bufPrint(out, "{d}h {d:0>2}m", .{ m / 60, m % 60 }) catch "";
+}
+const Overall = struct { today: u64 = 0, week: u64 = 0, all: u64 = 0, finished: usize = 0, streak: u32 = 0 };
+fn statsOverall() Overall {
+    statsLoad();
+    var o: Overall = .{};
+    const today = localDay(zr_now_seconds());
+    for (dstats[0..ndstats]) |d| {
+        o.all += d.secs;
+        if (d.day == today) o.today += d.secs;
+        if (d.day > today - 7 and d.day <= today) o.week += d.secs;
+    }
+    for (bstats[0..nbstats]) |s| {
+        if (s.finished != 0) o.finished += 1;
+    }
+    var day = today;
+    if (daySecs(day) < 60) day -= 1;
+    while (daySecs(day) >= 60) : (day -= 1) o.streak += 1;
+    return o;
+}
+fn daySecs(day: i32) u32 {
+    var i = ndstats;
+    while (i > 0) {
+        i -= 1;
+        if (dstats[i].day == day) return dstats[i].secs;
+        if (dstats[i].day < day) break;
+    }
+    return 0;
+}
+fn bookStatsLine(s: *const BookStat, l1: []u8, l2: []u8) [2][]const u8 {
+    var d: [32]u8 = undefined;
+    const a = std.fmt.bufPrint(l1, "{s} read \xc2\xb7 {d} pages \xc2\xb7 {d} session{s}", .{ fmtDur(s.secs, &d), s.pages, s.sessions, if (s.sessions == 1) "" else "s" }) catch "";
+    var e: [32]u8 = undefined;
+    var f: [64]u8 = undefined;
+    const pct: u32 = if (pool.npages > 0) @intCast(std.math.clamp(@divTrunc((pool.cur + 1) * 100, pool.npages), 0, 100)) else s.pct;
+    const b = if (s.finished != 0)
+        std.fmt.bufPrint(l2, "{d}% \xc2\xb7 finished \xc2\xb7 since {s}", .{ pct, fmtDate(s.first, &f)[0..@min(10, fmtDate(s.first, &f).len)] }) catch ""
+    else if (book.reflow and s.pages >= 3 and s.secs >= 60 and pool.npages > pool.cur + 1)
+        std.fmt.bufPrint(l2, "{d}% \xc2\xb7 about {s} left at your pace", .{ pct, fmtDur(@as(u64, s.secs) * @as(u64, @intCast(pool.npages - 1 - pool.cur)) / s.pages, &e) }) catch ""
+    else
+        std.fmt.bufPrint(l2, "{d}% \xc2\xb7 since {s}", .{ pct, fmtDate(s.first, &f)[0..@min(10, fmtDate(s.first, &f).len)] }) catch "";
+    return .{ a, b };
+}
+fn drawBookStatsLine(x: i32, y: i32) void {
+    const i = stats_cur orelse return;
+    var l1: [160]u8 = undefined;
+    var l2: [160]u8 = undefined;
+    const ls = bookStatsLine(&bstats[i], &l1, &l2);
+    const maxw: f32 = @floatFromInt(@as(i32, @intCast(W)) - 270 - x);
+    textFit(SANS, 26, @floatFromInt(x), @floatFromInt(y), ls[0], maxw, 0x33);
+    textFit(SANS, 26, @floatFromInt(x), @floatFromInt(y + 42), ls[1], maxw, 0x55);
+}
+fn openStats() void {
+    statsLoad();
+    statsSave();
+    stats_return = screen;
+    stats_confirm_until = 0;
+    const o = statsOverall();
+    logf("stats: today={d}s week={d}s all={d}s finished={d} streak={d} books={d}", .{ o.today, o.week, o.all, o.finished, o.streak, nbstats });
+    showScreen(.stats);
+}
+fn resetStatsButton() Rect {
+    return .{ .x = 70, .y = @as(i32, @intCast(H)) - 170, .w = @as(i32, @intCast(W)) - 140, .h = 110 };
+}
+fn drawStats() void {
+    header("Reading stats", true);
+    const o = statsOverall();
+    var a: [32]u8 = undefined;
+    var b: [32]u8 = undefined;
+    var c: [32]u8 = undefined;
+    var l: [200]u8 = undefined;
+    text(SANS, 36, 70, 290, std.fmt.bufPrint(&l, "Today {s}  \xc2\xb7  Last 7 days {s}  \xc2\xb7  All time {s}", .{ fmtDur(o.today, &a), fmtDur(o.week, &b), fmtDur(o.all, &c) }) catch "", 0);
+    text(SANS, 36, 70, 350, std.fmt.bufPrint(&l, "Books finished {d}  \xc2\xb7  Streak {d} day{s}", .{ o.finished, o.streak, if (o.streak == 1) "" else "s" }) catch "", 0);
+    // 7-day bar chart
+    const today = localDay(zr_now_seconds());
+    var maxs: u32 = 60;
+    for (0..7) |k| maxs = @max(maxs, daySecs(today - 6 + @as(i32, @intCast(k))));
+    const top: i32 = 440;
+    const ch: i32 = 300;
+    const bw: i32 = 120;
+    const gap: i32 = @divTrunc(@as(i32, @intCast(W)) - 140 - 7 * bw, 6);
+    const names = [_][]const u8{ "Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed" };
+    for (0..7) |k| {
+        const day = today - 6 + @as(i32, @intCast(k));
+        const s = daySecs(day);
+        const h: i32 = @intCast(@divTrunc(@as(i64, s) * ch, maxs));
+        const x = 70 + @as(i32, @intCast(k)) * (bw + gap);
+        fill(.{ .x = x, .y = top + ch - h, .w = bw, .h = h }, if (k == 6) 0x00 else 0x77);
+        fill(.{ .x = x, .y = top + ch, .w = bw, .h = 3 }, 0x00);
+        var m: [16]u8 = undefined;
+        if (s >= 60) textCenter(SANS, 24, .{ .x = x, .y = top + ch - h - 40, .w = bw, .h = 36 }, std.fmt.bufPrint(&m, "{d}m", .{s / 60}) catch "", 0x33);
+        textCenter(SANS, 26, .{ .x = x, .y = top + ch + 8, .w = bw, .h = 40 }, if (k == 6) "Today" else names[@intCast(@mod(day, 7))], 0x33);
+    }
+    text(SERIF_BOLD, 38, 70, 880, "Recent books", 0);
+    // up to 5 most recently opened books
+    var order: [4000]usize = undefined;
+    for (0..nbstats) |i| order[i] = i;
+    std.mem.sort(usize, order[0..nbstats], {}, struct {
+        fn lt(_: void, x: usize, y: usize) bool {
+            return bstats[x].last > bstats[y].last;
+        }
+    }.lt);
+    var row: i32 = 0;
+    for (order[0..nbstats]) |i| {
+        if (row >= 5) break;
+        const s = &bstats[i];
+        var title: []const u8 = "";
+        for (lib[0..nlib]) |e| if (fnv(e.path) == s.id) {
+            title = e.title;
+            break;
+        };
+        if (title.len == 0) continue;
+        const y = 950 + row * 100;
+        textFit(SERIF, 34, 70, @floatFromInt(y), title, @as(f32, @floatFromInt(W)) - 140, 0);
+        var d: [32]u8 = undefined;
+        text(SANS, 26, 70, @floatFromInt(y + 40), std.fmt.bufPrint(&l, "{s}  \xc2\xb7  {d} pages  \xc2\xb7  {d} sessions  \xc2\xb7  {d}%{s}", .{ fmtDur(s.secs, &d), s.pages, s.sessions, s.pct, if (s.finished != 0) "  \xc2\xb7  finished" else "" }) catch "", 0x55);
+        row += 1;
+    }
+    if (row == 0) text(SANS, 30, 70, 950, "No reading recorded yet.", 0x55);
+    text(SANS, 24, 70, @floatFromInt(@as(i32, @intCast(H)) - 190), "Counts active reading only. Stored on this Kindle; never sent anywhere.", 0x77);
+    const confirming = nowUs() < stats_confirm_until;
+    button(resetStatsButton(), if (confirming) "Tap again to erase all reading stats" else "Reset stats", confirming);
+    drawToast();
+}
+fn statsTap(x: i32, y: i32) void {
+    if (topButton(true).contains(x, y)) return showScreen(stats_return);
+    if (resetStatsButton().contains(x, y)) {
+        if (nowUs() < stats_confirm_until) {
+            nbstats = 0;
+            ndstats = 0;
+            if (book.open) {
+                stats_cur = statsFor(fnv(book.pathS()), true);
+                if (stats_cur) |i| {
+                    bstats[i].first = zr_now_seconds();
+                    bstats[i].last = bstats[i].first;
+                }
+            }
+            stats_dirty = true;
+            statsSave();
+            stats_confirm_until = 0;
+            logf("reading stats reset", .{});
+            toast("Reading stats erased", .{});
+        } else {
+            stats_confirm_until = nowUs() + 5_000_000;
+        }
+        return markFull(WF_REAGL);
+    }
+}
+
 fn redraw() bool {
     if (sleep_phase != .awake) {
         drawSleeping();
@@ -3562,6 +3894,7 @@ fn redraw() bool {
         .upload => drawUpload(),
         .bookmarks => drawBookmarks(),
         .noteedit => drawNoteEditor(),
+        .stats => drawStats(),
         .reader => return drawReader(),
     }
     return true;
@@ -3638,6 +3971,7 @@ fn goPage(p: i32, t_ev: u64) void {
     if (!book.open) return;
     const np = std.math.clamp(p, 0, pool.npages - 1);
     if (np == pool.cur and !need_page) return;
+    statsPageTurn(pool.cur, np);
     _ = pthread_mutex_lock(&pool.mtx);
     if (np != pool.cur) pool.dir = if (np > pool.cur) 1 else -1;
     pool.cur = np;
@@ -3785,6 +4119,7 @@ fn onTap(x: i32, y: i32, t_ev: u64) void {
         .upload => uploadTap(x, y),
         .bookmarks => bookmarksTap(x, y, t_ev),
         .noteedit => noteEditorTap(x, y),
+        .stats => statsTap(x, y),
     }
 }
 
@@ -4534,6 +4869,9 @@ fn parseArgs(argv: []const [*:0]const u8) bool {
         } else if (eql(a, "--log") and has_next) {
             i += 1;
             opts.log = argv[i];
+        } else if (eql(a, "--stats-idle-sec") and has_next) {
+            i += 1;
+            opts.stats_idle_sec = std.fmt.parseInt(u32, std.mem.span(argv[i]), 10) catch return false;
         } else if (eql(a, "--upload-port") and has_next) {
             i += 1;
             opts.upload_port = std.fmt.parseInt(u16, std.mem.span(argv[i]), 10) catch return false;
@@ -4710,6 +5048,7 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
         }
         if (sleep_phase != .awake) last_input = nowUs();
         if (sleep_phase == .awake) searchStep();
+        statsTick(last_input);
         pump();
         if (pending_shot) |si| {
             if (!in_flight and !need_page and dirty.empty()) {
