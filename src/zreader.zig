@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.9.3";
+const VERSION = "0.9.5";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 
 // ---------------- C ----------------
@@ -1672,6 +1672,7 @@ fn closeBook() void {
     search_running = false;
     search_hit = null;
     freeNotes();
+    nbookmarks = 0;
     if (pool.trims.len > 0) alloc.free(pool.trims);
     pool.trims = &.{};
     book.open = false;
@@ -1800,6 +1801,7 @@ fn openBook(path: []const u8) bool {
     search_running = false;
     search_hit = null;
     loadNotes();
+    loadBookmarks();
     if (book.reflow) {
         const migrated = if (book.nnotes > 0) migrateNotes() else false;
         const position = if (st.anchor.chapter >= 0) st.anchor else if (!st.typography or book.nnotes > 0) pageAnchor(pool.cur) else Anchor{};
@@ -1839,6 +1841,8 @@ fn relayoutStyle(font: f32, margin: f32, spacing: f32) void {
     if (anchored_page >= 0) np_page = anchored_page;
     resolveNotePages();
     saveNotes();
+    resolveBookmarkPages();
+    saveBookmarks();
     _ = pthread_mutex_lock(&pool.mtx);
     pool.font = font;
     pool.margin = margin;
@@ -2313,7 +2317,7 @@ fn scanLibrary() void {
 }
 
 // ---------------- UI state ----------------
-const Screen = enum { library, reader, toc, notes, search, device, upload };
+const Screen = enum { library, reader, toc, notes, search, device, upload, bookmarks };
 var screen: Screen = .library;
 var menu_open = false;
 var popup_open = false;
@@ -2668,6 +2672,7 @@ fn definitionTap(x: i32, y: i32) void {
 // ---------------- composing ----------------
 fn drawOverlays() void {
     drawSearchHit();
+    if (bookmarkIndex(pool.cur) != null) drawRibbon();
     for (book.notes[0..book.nnotes]) |*n| {
         if (n.style == 2) continue;
         var qs: [64][4]f32 = undefined;
@@ -2740,10 +2745,12 @@ fn drawMenu() void {
         // 0.9.4: "Up"/"Down" removed (page taps and swipes do the same); row 1
         // columns 2-3 are free for future buttons.
         button(panelButton(1, 1), "Reset pan", false);
+        button(panelButton(1, 2), if (bookmarkIndex(pool.cur) != null) "Unbookmark" else "Bookmark", bookmarkIndex(pool.cur) != null);
     }
     button(panelButton(2, 0), "Search", false);
     button(panelButton(2, 1), "Export all", false);
     button(panelButton(2, 2), "Settings", false);
+    button(panelButton(2, 3), "Bookmarks", false);
     drawRefreshButton();
     if (book.reflow) {
         button(panelButton(1, 0), "Text -", false);
@@ -3139,9 +3146,207 @@ fn drawNotes() void {
         textFit(SERIF, 38, @floatFromInt(r.x), @floatFromInt(r.y + 112), qt, @floatFromInt(r.w), 0x00);
         rowSep(r);
     }
-    text(SANS, 26, 70, @floatFromInt(@as(i32, @intCast(H)) - 170), "Tap to open \xc2\xb7 long-press to delete", 0x77);
     pager(book.nnotes);
     drawToast();
+}
+
+// ---- v0.9.5 bookmarks ----
+// Per book in DATA/state/<hash>.bookmarks (one line each: page, time, EPUB
+// anchor, snippet; tab-separated). Local only. The ribbon is an overlay drawn
+// with the page (drawOverlays), never part of the rendered page raster.
+const Bookmark = struct { page: i32, ts: i64, anchor: Anchor = .{}, snip: [96]u8 = undefined, snip_len: usize = 0 };
+var bookmarks: [256]Bookmark = undefined;
+var nbookmarks: usize = 0;
+fn bookmarksPath(out: []u8) []const u8 {
+    return std.fmt.bufPrint(out, "{s}/state/{x:0>16}.bookmarks", .{ opts.data, fnv(book.pathS()) }) catch "";
+}
+fn bookmarkIndex(page: i32) ?usize {
+    for (bookmarks[0..nbookmarks], 0..) |*b, i| if (b.page == page) return i;
+    return null;
+}
+fn sortBookmarks() void {
+    std.mem.sort(Bookmark, bookmarks[0..nbookmarks], {}, struct {
+        fn lt(_: void, a: Bookmark, b: Bookmark) bool {
+            return a.page < b.page;
+        }
+    }.lt);
+}
+fn resolveBookmarkPages() void {
+    if (!book.reflow) return;
+    for (bookmarks[0..nbookmarks]) |*b| {
+        if (b.anchor.chapter < 0) continue;
+        const p = zr_anchor_page(book.doc, &b.anchor);
+        if (p >= 0) b.page = p;
+    }
+    sortBookmarks();
+}
+fn loadBookmarks() void {
+    nbookmarks = 0;
+    var pb: [1200]u8 = undefined;
+    var zb: [1200]u8 = undefined;
+    const z = std.fmt.bufPrintSentinel(&zb, "{s}", .{bookmarksPath(&pb)}, 0) catch return;
+    const data = readFile(z) orelse return;
+    defer alloc.free(data);
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        if (nbookmarks >= bookmarks.len) break;
+        var f = std.mem.splitScalar(u8, line, '\t');
+        const page = std.fmt.parseInt(i32, f.next() orelse continue, 10) catch continue;
+        if (page < 0) continue;
+        var b: Bookmark = .{ .page = page, .ts = std.fmt.parseInt(i64, f.next() orelse "0", 10) catch 0 };
+        const ch = std.fmt.parseInt(c_int, f.next() orelse "-1", 10) catch -1;
+        const st = std.fmt.parseInt(u32, f.next() orelse "0", 10) catch 0;
+        const en = std.fmt.parseInt(u32, f.next() orelse "0", 10) catch 0;
+        const hs = std.fmt.parseInt(u64, f.next() orelse "0", 16) catch 0;
+        if (ch >= 0 and en > st and hs != 0) b.anchor = .{ .chapter = ch, .start = st, .end = en, .hash = hs };
+        const s = f.rest();
+        b.snip_len = @min(s.len, b.snip.len);
+        @memcpy(b.snip[0..b.snip_len], s[0..b.snip_len]);
+        if (bookmarkIndex(b.page) != null) continue;
+        bookmarks[nbookmarks] = b;
+        nbookmarks += 1;
+    }
+    resolveBookmarkPages();
+    sortBookmarks();
+}
+fn saveBookmarks() void {
+    var b = Buf.init(4096);
+    defer b.deinit();
+    for (bookmarks[0..nbookmarks]) |*m| {
+        b.print("{d}\t{d}\t{d}\t{d}\t{d}\t{x}\t", .{ m.page, m.ts, m.anchor.chapter, m.anchor.start, m.anchor.end, m.anchor.hash });
+        b.put(m.snip[0..m.snip_len]);
+        b.put("\n");
+    }
+    var pb: [1200]u8 = undefined;
+    _ = writeFileAtomic(bookmarksPath(&pb), b.slice());
+}
+fn pageSnippet(out: []u8) usize {
+    loadWords();
+    var n: usize = 0;
+    for (book.words[0..book.nwords]) |w| {
+        if (w.off < 0 or w.len <= 0) continue;
+        const o: usize = @intCast(w.off);
+        const l: usize = @intCast(w.len);
+        if (o + l > book.wtext.len) break;
+        if (n > 0) {
+            if (n + 1 >= out.len) break;
+            out[n] = ' ';
+            n += 1;
+        }
+        var k: usize = 0;
+        while (k < l and n < out.len) : (k += 1) {
+            const c = book.wtext[o + k];
+            out[n] = if (c == '\t' or c == '\n' or c == '\r') ' ' else c;
+            n += 1;
+        }
+        if (n >= 60) break;
+    }
+    // never cut a UTF-8 sequence in half
+    var s = n;
+    while (s > 0 and (out[s - 1] & 0xC0) == 0x80) s -= 1;
+    if (s > 0 and out[s - 1] >= 0xC0) {
+        const lead = out[s - 1];
+        const need: usize = if (lead >= 0xF0) 4 else if (lead >= 0xE0) 3 else 2;
+        if (n - (s - 1) < need) n = s - 1;
+    }
+    return n;
+}
+fn toggleBookmark() void {
+    if (!book.open) return;
+    if (bookmarkIndex(pool.cur)) |i| {
+        var j = i;
+        while (j + 1 < nbookmarks) : (j += 1) bookmarks[j] = bookmarks[j + 1];
+        nbookmarks -= 1;
+        logf("bookmark removed: p={d}", .{pool.cur + 1});
+    } else {
+        if (nbookmarks >= bookmarks.len) return toast("Bookmark list is full", .{});
+        var b: Bookmark = .{ .page = pool.cur, .ts = zr_now_seconds() };
+        if (book.reflow) b.anchor = readingAnchor();
+        b.snip_len = pageSnippet(&b.snip);
+        bookmarks[nbookmarks] = b;
+        nbookmarks += 1;
+        sortBookmarks();
+        logf("bookmark added: p={d}", .{pool.cur + 1});
+    }
+    saveBookmarks();
+}
+fn deleteBookmark(k: usize) void {
+    if (k >= nbookmarks) return;
+    var j = k;
+    while (j + 1 < nbookmarks) : (j += 1) bookmarks[j] = bookmarks[j + 1];
+    nbookmarks -= 1;
+    saveBookmarks();
+}
+fn ribbonRect() Rect {
+    return .{ .x = @as(i32, @intCast(W)) - 96, .y = 0, .w = 44, .h = 92 };
+}
+fn drawRibbon() void {
+    const r = ribbonRect();
+    fill(.{ .x = r.x - 3, .y = 0, .w = r.w + 6, .h = r.h - 18 }, 0xFF);
+    fill(.{ .x = r.x, .y = 0, .w = r.w, .h = r.h - 22 }, 0x00);
+    // swallow-tail: two black legs with a white notch between them
+    var k: i32 = 0;
+    while (k < 22) : (k += 1) {
+        const half = @divTrunc(r.w, 2);
+        const leg = half - k;
+        if (leg <= 0) break;
+        fill(.{ .x = r.x, .y = r.y + r.h - 22 + k, .w = leg, .h = 1 }, 0x00);
+        fill(.{ .x = r.x + r.w - leg, .y = r.y + r.h - 22 + k, .w = leg, .h = 1 }, 0x00);
+    }
+}
+fn bookmarkToggleButton() Rect {
+    return .{ .x = 336, .y = @as(i32, @intCast(H)) - 262, .w = @as(i32, @intCast(W)) - 672, .h = 100 };
+}
+fn drawBookmarks() void {
+    header("Bookmarks", true);
+    if (nbookmarks == 0) text(SANS, 34, 70, 300, "No bookmarks yet.", 0x33);
+    if (nbookmarks > 0) text(SANS, 26, 430, 112, "Tap to open \xc2\xb7 long-press to delete", 0x77);
+    const per = rowsPerPage();
+    var i: usize = 0;
+    while (i < per) : (i += 1) {
+        const k = list_page * per + i;
+        if (k >= nbookmarks) break;
+        const m = &bookmarks[k];
+        const r = rowRect(i);
+        var b: [120]u8 = undefined;
+        var db: [64]u8 = undefined;
+        const meta = std.fmt.bufPrint(&b, "Page {d}  \xc2\xb7  {s}", .{ m.page + 1, fmtDate(m.ts, &db) }) catch "";
+        text(SANS, 30, @floatFromInt(r.x), @floatFromInt(r.y + 50), meta, 0x33);
+        if (m.snip_len > 0) textFit(SERIF, 36, @floatFromInt(r.x), @floatFromInt(r.y + 110), m.snip[0..m.snip_len], @floatFromInt(r.w), 0x00);
+        rowSep(r);
+    }
+    pager(nbookmarks);
+    var lb: [64]u8 = undefined;
+    const label = std.fmt.bufPrint(&lb, "{s} page {d}", .{ if (bookmarkIndex(pool.cur) != null) "Remove bookmark," else "Bookmark", pool.cur + 1 }) catch "Bookmark";
+    button(bookmarkToggleButton(), label, false);
+    drawToast();
+}
+fn bookmarksTap(x: i32, y: i32, t_ev: u64) void {
+    if (topButton(true).contains(x, y)) return showScreen(.reader);
+    if (bookmarkToggleButton().contains(x, y)) {
+        toggleBookmark();
+        return markFull(WF_REAGL);
+    }
+    if (listNav(x, y)) return;
+    const per = rowsPerPage();
+    for (0..per) |i| {
+        if (!rowRect(i).contains(x, y)) continue;
+        const k = list_page * per + i;
+        if (k >= nbookmarks) return;
+        showScreen(.reader);
+        return goPage(bookmarks[k].page, t_ev);
+    }
+}
+fn bookmarksLongPress(x: i32, y: i32) void {
+    const per = rowsPerPage();
+    for (0..per) |i| {
+        if (!rowRect(i).contains(x, y)) continue;
+        const k = list_page * per + i;
+        if (k >= nbookmarks) return;
+        deleteBookmark(k);
+        toast("Bookmark deleted", .{});
+        return markFull(WF_REAGL);
+    }
 }
 
 fn redraw() bool {
@@ -3156,6 +3361,7 @@ fn redraw() bool {
         .search => drawSearch(),
         .device => drawDevice(),
         .upload => drawUpload(),
+        .bookmarks => drawBookmarks(),
         .reader => return drawReader(),
     }
     return true;
@@ -3377,6 +3583,7 @@ fn onTap(x: i32, y: i32, t_ev: u64) void {
         .search => searchTap(x, y, t_ev),
         .device => deviceTap(x, y),
         .upload => uploadTap(x, y),
+        .bookmarks => bookmarksTap(x, y, t_ev),
     }
 }
 
@@ -3391,6 +3598,7 @@ fn onReaderTap(x: i32, y: i32, t_ev: u64) void {
     }
     if (menu_open) {
         if (panelButton(2, 2).contains(x, y)) return openDevice();
+        if (panelButton(2, 3).contains(x, y)) return showScreen(.bookmarks);
         if (refreshButton().contains(x, y)) return cycleRefreshSetting();
         if (topButton(false).contains(x, y)) {
             saveState();
@@ -3441,6 +3649,11 @@ fn onReaderTap(x: i32, y: i32, t_ev: u64) void {
             }
             if (panelButton(1, 1).contains(x, y)) {
                 return setView(pool.view, null);
+            }
+            if (panelButton(1, 2).contains(x, y)) {
+                toggleBookmark();
+                menu_open = false;
+                return markFull(WF_GC16);
             }
         }
         if (book.reflow) {
@@ -3563,6 +3776,7 @@ fn onLongPress(x: i32, y: i32) void {
             editing_note = null;
             markDirty(selectionScreenRect(), WF_DU);
         },
+        .bookmarks => bookmarksLongPress(x, y),
         .notes => {
             const per = rowsPerPage();
             for (0..per) |i| {

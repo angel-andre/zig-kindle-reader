@@ -10,6 +10,13 @@
 - Contents opens a document's table of contents. The menu also offers progress, go-to and return to start.
 - Since 0.9.4 the in-book menu has no Up/Down buttons (tap or swipe the page instead). For PDFs, the second row holds the view mode and Reset pan, with free space for future buttons.
 
+## Bookmarks
+
+- Add: in a PDF, open the menu and tap **Bookmark** (second row); it shows **Unbookmark** on a bookmarked page. In any book, the menu’s **Bookmarks** button (third row) opens the list, whose bottom button reads “Bookmark page N” or “Remove bookmark, page N” for the current page. This is how to add one in an EPUB.
+- A bookmarked page shows a small black ribbon at the top right. It appears or disappears as soon as you close the menu, with the normal page update and no extra flash. Pages without a bookmark look exactly as before.
+- The Bookmarks screen lists bookmarks in page order with the page number, the date added and the first words of the page (blank for pages without a text layer, such as some scans). Tap an entry to jump to it; long-press to delete it.
+- Bookmarks are saved per book in `state/` on the Kindle (next to the reading position) and survive restarts and updates. EPUB bookmarks keep a text anchor, so they stay on the same passage after changing text size, margins or spacing. Nothing leaves the device.
+
 ## PDFs and EPUBs
 
 PDF views: fit page, cropped fit width, 1.5× and 2×. Fit-width navigation steps by a screen minus a 96-pixel overlap. Drag once to pan; the pan applies on release. There is no pinch gesture. Trim margins is separate from fit-width cropping. Views and positions persist per book.
