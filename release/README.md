@@ -1,5 +1,3 @@
-> STAGING ONLY: strict all-address-literals privacy scan is not yet clear for the binary. See docs/PRIVACY_REVIEW.md. No upload has been performed.
-
 # 0.8.0 runtime (current)
 
 `zr08.tgz` (about 8.2 MiB) is the 0.8.0 runtime installed on the reference device. SHA-256: `4a9027bd8bac4cc3ac94d5c8337367c0a3d7a648589e2c565b06ec111c884016`. `installed-sizes-08.json` records its build sizes.
