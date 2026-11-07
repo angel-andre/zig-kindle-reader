@@ -2,6 +2,10 @@
 
 Earlier versions were early prototypes and are not listed.
 
+## 0.10.6
+
+Readable highlights on scanned pages and accented letters on the keyboard. On scanned (image) PDF pages a highlight could turn into a dark box over the print, because each overlapping text box darkened the page again; on these pages a highlight now lightens the paper to a light grey and leaves the print as it is, so overlaps never build up. Highlights on other PDFs and on EPUB and other reflowed books are unchanged, and there is no extra flash. The search and note keyboards have a new **ÀÉ** key that switches the letter rows to á à â ä ã å æ ç é è ê ë í ì î ï ñ ó ò ô ö õ ø œ ú ù û ü ý ÿ ß (plus ¿ ¡ « » €); **abc** switches back. In the note keyboard Shift gives the capitals (Á … Ÿ). Backspace in search now removes a whole accented letter. Search remains case-insensitive.
+
 ## 0.10.5
 
 Faster turns through heavy scanned pages: when the page you turn to is a heavy colour picture page, it is shown at once as a draft and the exact page replaces it with a non-flashing update, as for the first page in 0.10.4. The page you are waiting for now always comes before pre-rendering: if both background workers are busy with other pages, one of them is stopped and restarted later. Final pages are byte-identical and there are no extra flashes. Kindle, scan-C, cold open: average of the first 8 pages 2.29 s → 0.53 s (slowest 8.2 s → 0.78 s), turn p90 496 → 134 ms, slowest turn 3.67 → 2.76 s; warm turns unchanged (about 11 ms).

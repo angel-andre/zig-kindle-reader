@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.10.5";
+const VERSION = "0.10.6";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 // v0.10.0 second book font (OFL, Latin subset) and compact Latin hyphenation patterns (MIT).
 const sans_bold = @embedFile("fonts/NotoSans-Bold-Latin.ttf");
@@ -702,6 +702,20 @@ fn tint(r0: Rect, k: u32) void {
         const off = @as(usize, @intCast(y)) * STRIDE + @as(usize, @intCast(r.x));
         for (fb[off .. off + @as(usize, @intCast(r.w))]) |*p| p.* = @intCast((@as(u32, p.*) * k) / 255);
     }
+}
+fn capLight(r0: Rect, k: u8) void {
+    const r = r0.clip();
+    if (r.empty()) return;
+    var y: i32 = r.y;
+    while (y < r.y + r.h) : (y += 1) {
+        const off = @as(usize, @intCast(y)) * STRIDE + @as(usize, @intCast(r.x));
+        for (fb[off .. off + @as(usize, @intCast(r.w))]) |*p| p.* = @min(p.*, k);
+    }
+}
+// v0.10.6: the page on screen is a PDF page drawn mostly from images (scans).
+fn shownImagePage() bool {
+    if (!book.is_pdf or pool.shown < 0) return false;
+    return pool.slots[@intCast(pool.shown)].metrics.image >= 0.5;
 }
 fn textW(font: c_int, size: f32, s: []const u8) f32 {
     if (s.len == 0) return 0;
@@ -3246,7 +3260,10 @@ fn drawOverlays() void {
         for (qs[0..nq]) |q| {
             const r = toScreen(q);
             if (n.style == 1) {
-                tint(r.grow(4), 0xC8);
+                // v0.10.6: on scanned/image pages the multiplied tint (applied once per
+                // overlapping OCR quad) built up into a dark box over the print; there
+                // the paper is capped at light grey instead, which never builds up.
+                if (shownImagePage()) capLight(r.grow(4), 0xC8) else tint(r.grow(4), 0xC8);
             } else {
                 fill(.{ .x = r.x, .y = r.y + r.h + 3, .w = r.w, .h = 5 }, 0x00);
             }
@@ -3985,7 +4002,8 @@ fn noteField() Rect {
 fn noteControl(which: usize) Rect {
     const y0: i32 = 600 + 5 * 118;
     return switch (which) {
-        0 => .{ .x = 70, .y = y0, .w = 300, .h = 104 }, // Shift
+        0 => .{ .x = 70, .y = y0, .w = 145, .h = 104 }, // Shift
+        6 => .{ .x = 225, .y = y0, .w = 145, .h = 104 }, // accents
         1 => .{ .x = 390, .y = y0, .w = 492, .h = 104 }, // Space
         2 => .{ .x = 902, .y = y0, .w = 300, .h = 104 }, // Backspace
         3 => .{ .x = 70, .y = y0 + 130, .w = 300, .h = 104 }, // Clear
@@ -4082,11 +4100,17 @@ fn drawNoteEditor() void {
     tb[note_len] = '|';
     drawWrapped(SANS, 38, f, tb[0 .. note_len + 1], 5, 0);
     for (0..KEY_ROWS.len + 1) |r| for (0..10) |c| {
+        if (kb_accents and r < 4) {
+            const k = accentKey(r, c, note_shift);
+            if (k.len > 0) button(noteKey(r, c), k, false);
+            continue;
+        }
         const ch = noteKeyChar(r, c) orelse continue;
         const shown = if (note_shift) std.ascii.toUpper(ch) else ch;
         button(noteKey(r, c), &.{shown}, false);
     };
     button(noteControl(0), "Shift", note_shift);
+    button(noteControl(6), if (kb_accents) "abc" else ACCENT_LABEL, kb_accents);
     button(noteControl(1), "Space", false);
     button(noteControl(2), "Backspace", false);
     button(noteControl(3), "Clear", false);
@@ -4101,6 +4125,20 @@ fn noteEditorTap(x: i32, y: i32) void {
         note_shift = !note_shift;
         return markFull(WF_REAGL);
     }
+    if (noteControl(6).contains(x, y)) {
+        kb_accents = !kb_accents;
+        return markFull(WF_REAGL);
+    }
+    if (kb_accents) for (0..4) |r| for (0..10) |c| {
+        if (!noteKey(r, c).contains(x, y)) continue;
+        const k = accentKey(r, c, note_shift);
+        if (k.len == 0) return;
+        if (note_len + k.len >= note_buf.len - 1) return toast("Note is full", .{});
+        @memcpy(note_buf[note_len..][0..k.len], k);
+        note_len += k.len;
+        note_shift = false;
+        return markFull(WF_REAGL);
+    };
     if (noteControl(3).contains(x, y)) {
         note_len = 0;
         note_shift = true;
@@ -6689,6 +6727,35 @@ var search_tick: u64 = 0;
 var search_hit: ?SearchResult = null;
 var search_hit_until: u64 = 0;
 const KEY_ROWS = [_][]const u8{ "1234567890", "qwertyuiop", "asdfghjkl", "zxcvbnm'-_" };
+// v0.10.6 accent layer (the accent key): replaces the four letter rows.
+var kb_accents = false;
+const ACCENT_LOWER = [4][10][]const u8{
+    .{ "\xc3\xa1", "\xc3\xa0", "\xc3\xa2", "\xc3\xa4", "\xc3\xa3", "\xc3\xa5", "\xc3\xa6", "\xc3\xa7", "\xc3\xa9", "\xc3\xa8" },
+    .{ "\xc3\xaa", "\xc3\xab", "\xc3\xad", "\xc3\xac", "\xc3\xae", "\xc3\xaf", "\xc3\xb1", "\xc3\xb3", "\xc3\xb2", "\xc3\xb4" },
+    .{ "\xc3\xb6", "\xc3\xb5", "\xc3\xb8", "\xc5\x93", "\xc3\xba", "\xc3\xb9", "\xc3\xbb", "\xc3\xbc", "\xc3\xbd", "\xc3\xbf" },
+    .{ "\xc3\x9f", "\xc2\xbf", "\xc2\xa1", "\xc2\xab", "\xc2\xbb", "\xe2\x82\xac", "'", "-", "", "" },
+};
+const ACCENT_UPPER = [4][10][]const u8{
+    .{ "\xc3\x81", "\xc3\x80", "\xc3\x82", "\xc3\x84", "\xc3\x83", "\xc3\x85", "\xc3\x86", "\xc3\x87", "\xc3\x89", "\xc3\x88" },
+    .{ "\xc3\x8a", "\xc3\x8b", "\xc3\x8d", "\xc3\x8c", "\xc3\x8e", "\xc3\x8f", "\xc3\x91", "\xc3\x93", "\xc3\x92", "\xc3\x94" },
+    .{ "\xc3\x96", "\xc3\x95", "\xc3\x98", "\xc5\x92", "\xc3\x9a", "\xc3\x99", "\xc3\x9b", "\xc3\x9c", "\xc3\x9d", "\xc5\xb8" },
+    .{ "\xc3\x9f", "\xc2\xbf", "\xc2\xa1", "\xc2\xab", "\xc2\xbb", "\xe2\x82\xac", "'", "-", "", "" },
+};
+const ACCENT_LABEL = "\xc3\x80\xc3\x89";
+fn accentKey(row: usize, col: usize, upper: bool) []const u8 {
+    if (row >= 4 or col >= 10) return "";
+    return if (upper) ACCENT_UPPER[row][col] else ACCENT_LOWER[row][col];
+}
+fn searchAccentButton() Rect {
+    return .{ .x = 70, .y = 1020, .w = 300, .h = 110 };
+}
+fn searchAddStr(t: []const u8) void {
+    if (t.len == 0 or search_len + t.len >= search_query.len - 1) return;
+    @memcpy(search_query[search_len..][0..t.len], t);
+    search_len += t.len;
+    search_query[search_len] = 0;
+    markDirty(searchField(), WF_REAGL);
+}
 fn searchKey(row: usize, col: usize) Rect {
     const bw = @divTrunc(@as(i32, @intCast(W)) - 140, 10);
     return .{ .x = 70 + @as(i32, @intCast(col)) * bw, .y = 500 + @as(i32, @intCast(row)) * 130, .w = bw - 10, .h = 110 };
@@ -6698,7 +6765,7 @@ fn searchField() Rect {
 }
 fn searchControl(which: usize) Rect {
     return switch (which) {
-        0 => .{ .x = 70, .y = 1020, .w = @as(i32, @intCast(W)) - 140, .h = 110 },
+        0 => .{ .x = 390, .y = 1020, .w = @as(i32, @intCast(W)) - 460, .h = 110 },
         1 => .{ .x = 70, .y = 1150, .w = 420, .h = 110 },
         2 => .{ .x = @as(i32, @intCast(W)) - 670, .y = 1150, .w = 600, .h = 110 },
         else => .{ .x = 70, .y = 1300, .w = @as(i32, @intCast(W)) - 140, .h = 110 },
@@ -6760,12 +6827,18 @@ fn drawSearch() void {
         const field = searchField();
         frame(field, 3, 0);
         textFit(SANS, 42, 90, 325, search_query[0..search_len], @floatFromInt(field.w - 40), 0);
-        for (KEY_ROWS, 0..) |row, r| for (row, 0..) |c, col| button(searchKey(r, col), &.{c}, false);
+        if (kb_accents) {
+            for (0..4) |r| for (0..10) |col| {
+                const k = accentKey(r, col, false);
+                if (k.len > 0) button(searchKey(r, col), k, false);
+            };
+        } else for (KEY_ROWS, 0..) |row, r| for (row, 0..) |c, col| button(searchKey(r, col), &.{c}, false);
+        button(searchAccentButton(), if (kb_accents) "abc" else ACCENT_LABEL, kb_accents);
         button(searchControl(0), "Space", false);
         button(searchControl(1), "Clear", false);
         button(searchControl(2), "Backspace", false);
         button(searchControl(3), "Search book", false);
-        text(SANS, 28, 70, 1480, "Case-insensitive / up to 200 matches / English keyboard", 0x55);
+        text(SANS, 28, 70, 1480, "Case-insensitive / up to 200 matches / \xc3\x80\xc3\x89 = accents", 0x55);
     } else {
         textFit(SANS, 34, 70, 280, search_query[0..search_len], @as(f32, @floatFromInt(W)) - 140, 0);
         button(searchEditButton(), if (search_running) "Stop / edit query" else "Edit query", false);
@@ -6825,7 +6898,13 @@ fn searchTap(x: i32, y: i32, t: u64) void {
         return showScreen(.reader);
     }
     if (search_editing) {
-        for (KEY_ROWS, 0..) |row, r| for (row, 0..) |c, col| if (searchKey(r, col).contains(x, y)) return searchAdd(c);
+        if (searchAccentButton().contains(x, y)) {
+            kb_accents = !kb_accents;
+            return markFull(WF_REAGL);
+        }
+        if (kb_accents) {
+            for (0..4) |r| for (0..10) |col| if (searchKey(r, col).contains(x, y)) return searchAddStr(accentKey(r, col, false));
+        } else for (KEY_ROWS, 0..) |row, r| for (row, 0..) |c, col| if (searchKey(r, col).contains(x, y)) return searchAdd(c);
         if (searchControl(0).contains(x, y)) return searchAdd(' ');
         if (searchControl(1).contains(x, y)) {
             search_len = 0;
@@ -6834,6 +6913,7 @@ fn searchTap(x: i32, y: i32, t: u64) void {
         }
         if (searchControl(2).contains(x, y) and search_len > 0) {
             search_len -= 1;
+            while (search_len > 0 and (search_query[search_len] & 0xC0) == 0x80) search_len -= 1;
             search_query[search_len] = 0;
             return markDirty(searchField(), WF_REAGL);
         }
