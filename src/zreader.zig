@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.9.0";
+const VERSION = "0.9.1";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 
 // ---------------- C ----------------
@@ -25,6 +25,12 @@ extern fn zr_layout_cache(data: [*:0]const u8) void;
 extern fn zr_no_core() void;
 extern fn zr_battery() c_int;
 extern fn zr_file_mtime(path: [*:0]const u8) i64;
+extern fn zr_up_start(books: [*:0]const u8, port: c_int, max: u64, free_floor: u64, device: c_int) c_int;
+extern fn zr_up_stop() void;
+extern fn zr_up_revision() c_uint;
+extern fn zr_up_saved() c_uint;
+extern fn zr_up_status(out: [*]u8, cap: c_int) void;
+extern fn zr_up_address(out: [*]u8, cap: c_int) c_int;
 extern fn zr_pc_init(data: [*:0]const u8, cap: u64) c_int;
 extern fn zr_pc_submit(name: [*:0]const u8, key: u64, fb: [*]const u8, w: c_int, h: c_int, stride: c_int) c_int;
 extern fn zr_pc_flush() void;
@@ -489,6 +495,9 @@ const Opts = struct {
     log: ?[*:0]const u8 = null,
     idle_min: u64 = 10,
     page_cache_mib: u64 = 20,
+    upload_port: u16 = 8080,
+    upload_min_free_mib: u64 = 6144,
+    upload_max_mib: u64 = 500,
     sim: ?[*:0]const u8 = null,
     shots: []const u8 = "shots",
     fast: bool = true,
@@ -1927,7 +1936,7 @@ fn changeLight(i: usize, value: i32) void {
     markFull(WF_REAGL);
 }
 fn drawDevice() void {
-    header("Light & Sleep", true);
+    header("Settings", true);
     for (0..2) |i| {
         var b: [100]u8 = undefined;
         const label = if (light_values[i] < 0) std.fmt.bufPrint(&b, "{s}: unavailable", .{if (i == 0) "Frontlight" else "Warmth"}) catch "" else std.fmt.bufPrint(&b, "{s}: {d} / 24", .{ if (i == 0) "Frontlight" else "Warmth", light_values[i] }) catch "";
@@ -1945,8 +1954,67 @@ fn drawDevice() void {
     button(sleepButton(), if (power_sleeps) "Power button sleeps: ON" else "Power button sleeps: OFF", power_sleeps);
     text(SANS, 28, 70, 1300, "Opt-in / experimental: test wake with SSH available.", 0x55);
     text(SANS, 28, 70, 1350, "OFF keeps the original power-button exit behavior.", 0x55);
+    button(uploadButton(), "Upload books over Wi-Fi", false);
     drawToast();
 }
+// ---- v0.9.1 Wi-Fi book upload (server lives only while this screen is open) ----
+fn uploadButton() Rect {
+    return .{ .x = 70, .y = 1430, .w = @as(i32, @intCast(W)) - 140, .h = 110 };
+}
+fn uploadStatusRect() Rect {
+    return .{ .x = 0, .y = 1000, .w = @intCast(W), .h = 260 };
+}
+var up_rev: c_uint = 0;
+var up_ok = false;
+var up_addr: [64]u8 = undefined;
+var up_addr_len: usize = 0;
+fn startUpload() void {
+    var bz: [1100]u8 = undefined;
+    const books = std.fmt.bufPrintSentinel(&bz, "{s}", .{opts.books}, 0) catch return;
+    up_addr_len = 0;
+    if (zr_up_address(&up_addr, up_addr.len) == 0) up_addr_len = std.mem.indexOfScalar(u8, &up_addr, 0) orelse 0;
+    const rc = zr_up_start(books, opts.upload_port, opts.upload_max_mib << 20, opts.upload_min_free_mib << 20, @intFromBool(opts.sim == null));
+    up_ok = rc == 0;
+    up_rev = zr_up_revision();
+    logf("upload server: {s} port {d} (rc={d})", .{ if (up_ok) "started" else "failed", opts.upload_port, rc });
+}
+fn stopUpload() void {
+    zr_up_stop();
+    const n = zr_up_saved();
+    logf("upload server: stopped; {d} book(s) received", .{n});
+    if (n > 0) scanLibrary();
+}
+fn drawUpload() void {
+    header("Upload books", true);
+    text(SANS, 34, 70, 320, "On a phone or computer on the same Wi-Fi,", 0);
+    text(SANS, 34, 70, 375, "open this address in a web browser:", 0);
+    var b: [128]u8 = undefined;
+    const addr = if (!up_ok) "Could not start (port busy?)" else if (up_addr_len == 0) "Not connected to Wi-Fi" else std.fmt.bufPrint(&b, "http://{s}:{d}", .{ up_addr[0..up_addr_len], opts.upload_port }) catch "";
+    textCenter(SANS, 56, .{ .x = 0, .y = 470, .w = @intCast(W), .h = 120 }, addr, 0);
+    var l: [128]u8 = undefined;
+    text(SANS, 28, 70, 700, std.fmt.bufPrint(&l, "PDF and EPUB only, up to {d} MB per file.", .{opts.upload_max_mib}) catch "", 0x55);
+    text(SANS, 28, 70, 750, std.fmt.bufPrint(&l, "Uploads are refused if less than {d} GB would stay free.", .{opts.upload_min_free_mib / 1024}) catch "", 0x55);
+    text(SANS, 28, 70, 800, "The upload page stops as soon as you leave this screen.", 0x55);
+    var st: [256]u8 = undefined;
+    zr_up_status(&st, st.len);
+    const sl = std.mem.indexOfScalar(u8, &st, 0) orelse 0;
+    text(SANS, 34, 70, 1080, if (up_ok) st[0..sl] else "Upload page is off", 0);
+    var c: [64]u8 = undefined;
+    text(SANS, 30, 70, 1150, std.fmt.bufPrint(&c, "Books received: {d}", .{zr_up_saved()}) catch "", 0x55);
+    drawToast();
+}
+fn uploadTap(x: i32, y: i32) void {
+    if (topButton(true).contains(x, y)) return showScreen(.library);
+}
+fn uploadTick() void {
+    if (screen != .upload or !up_ok) return;
+    const r = zr_up_revision();
+    if (r != up_rev) {
+        up_rev = r;
+        markDirty(uploadStatusRect(), WF_REAGL);
+    }
+}
+
 fn configureSleep(on: bool) bool {
     if (opts.sim == null) {
         if (on and in.power_fd < 0) {
@@ -1964,6 +2032,7 @@ fn configureSleep(on: bool) bool {
 }
 fn deviceTap(x: i32, y: i32) void {
     if (topButton(true).contains(x, y)) return showScreen(device_return);
+    if (uploadButton().contains(x, y)) return showScreen(.upload);
     for (0..2) |i| {
         if (light_values[i] >= 0 and lightButton(i, false).contains(x, y)) return changeLight(i, light_values[i] - 1);
         if (light_values[i] >= 0 and lightButton(i, true).contains(x, y)) return changeLight(i, light_values[i] + 1);
@@ -1982,6 +2051,7 @@ fn pausePrefetch(on: bool) void {
 }
 fn beginSleep(external: bool) void {
     if (!power_sleeps or sleep_phase != .awake) return;
+    if (screen == .upload) showScreen(.library);
     pcCaptureNow();
     saveState();
     search_running = false;
@@ -2163,7 +2233,7 @@ fn scanLibrary() void {
 }
 
 // ---------------- UI state ----------------
-const Screen = enum { library, reader, toc, notes, search, device };
+const Screen = enum { library, reader, toc, notes, search, device, upload };
 var screen: Screen = .library;
 var menu_open = false;
 var popup_open = false;
@@ -2593,7 +2663,7 @@ fn drawMenu() void {
     }
     button(panelButton(2, 0), "Search", false);
     button(panelButton(2, 1), "Export all", false);
-    button(panelButton(2, 2), "Light / Sleep", false);
+    button(panelButton(2, 2), "Settings", false);
     drawRefreshButton();
     if (book.reflow) {
         button(panelButton(1, 0), "Text -", false);
@@ -2909,7 +2979,7 @@ fn drawLibrary() void {
     button(libraryControl(0), SORT_NAMES[lib_sort], false);
     var label: [1100]u8 = undefined;
     button(libraryControl(1), std.fmt.bufPrint(&label, "Folder: {s}", .{if (folder_filter == 0) "All" else folders[folder_filter - 1]}) catch "Folders", folder_picker);
-    button(libraryControl(2), "Light / Sleep", false);
+    button(libraryControl(2), "Settings", false);
     const total = libraryCount();
     const per = rowsPerPage();
     if (total == 0) text(SANS, 34, 70, 410, "No PDF or EPUB books here.", 0x55);
@@ -3005,6 +3075,7 @@ fn redraw() bool {
         .notes => drawNotes(),
         .search => drawSearch(),
         .device => drawDevice(),
+        .upload => drawUpload(),
         .reader => return drawReader(),
     }
     return true;
@@ -3104,6 +3175,8 @@ fn goPage(p: i32, t_ev: u64) void {
 }
 
 fn showScreen(s: Screen) void {
+    if (screen == .upload and s != .upload) stopUpload();
+    if (s == .upload and screen != .upload) startUpload();
     dictionary_open = false;
     if (s != .search) search_running = false;
     search_hit = null;
@@ -3223,6 +3296,7 @@ fn onTap(x: i32, y: i32, t_ev: u64) void {
         .reader => onReaderTap(x, y, t_ev),
         .search => searchTap(x, y, t_ev),
         .device => deviceTap(x, y),
+        .upload => uploadTap(x, y),
     }
 }
 
@@ -3939,6 +4013,12 @@ fn parseArgs(argv: []const [*:0]const u8) bool {
         } else if (eql(a, "--log") and has_next) {
             i += 1;
             opts.log = argv[i];
+        } else if (eql(a, "--upload-port") and has_next) {
+            i += 1;
+            opts.upload_port = std.fmt.parseInt(u16, std.mem.span(argv[i]), 10) catch return false;
+        } else if (eql(a, "--upload-min-free-mib") and has_next) {
+            i += 1;
+            opts.upload_min_free_mib = std.fmt.parseInt(u64, std.mem.span(argv[i]), 10) catch return false;
         } else if (eql(a, "--page-cache-mib") and has_next) {
             i += 1;
             opts.page_cache_mib = std.fmt.parseInt(u64, std.mem.span(argv[i]), 10) catch return false;
@@ -4097,6 +4177,11 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
     main_loop: while (!@atomicLoad(bool, &g_quit, .seq_cst) and !quit_requested) {
         tick07();
         libTick();
+        if (screen == .upload) {
+            const before = up_rev;
+            uploadTick();
+            if (up_rev != before) last_input = nowUs();
+        }
         if (sleep_phase != .awake) last_input = nowUs();
         if (sleep_phase == .awake) searchStep();
         pump();
@@ -4112,6 +4197,7 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
         if (center_pending) timeout = @min(timeout, 20);
         if (toast_len > 0) timeout = @min(timeout, 200);
         if (lib_hold) timeout = @min(timeout, 15);
+        if (screen == .upload) timeout = @min(timeout, 250);
         _ = linux.poll(&pfds, nfds, timeout);
         const now = nowUs();
         checkLongPress();
@@ -4219,6 +4305,7 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
     }
 
     logf("exiting", .{});
+    if (screen == .upload) stopUpload();
     zr_device_sleep(0);
     zr_device_stop();
     closeBook();

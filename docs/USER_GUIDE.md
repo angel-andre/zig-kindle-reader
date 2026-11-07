@@ -33,7 +33,7 @@ Search uses an English keyboard and MuPDF text matching; it scans incrementally 
 
 Recent → Title → Progress cycles sorting. Folder selects relative subfolders; All resets it. Covers are generated lazily only for visible rows; unavailable/complex covers get placeholders. The disk cache is capped at 10 MiB, with 32 thumbnails in RAM. Changed files refresh on a later session, not via a live watcher. Since 0.8.0 cached covers load on a separate worker, new covers show a title/type placeholder immediately, and the next library page is prefetched. The header shows free/total storage and total book size; each row shows type (PDF/EPUB) and file size. A battery bar with percentage sits top-right in the library only (read-only, polled at most every three minutes, no extra refresh). Since 0.9.0 it is never drawn while a book is open, so it cannot cover text.
 
-Light / Sleep offers separate native 0–24 brightness and warmth controls through `com.lab126.powerd` LIPC. Startup reads values and does not write them; only deliberate adjustments queue a write. No backlight sysfs write is used. Leave experimental power-button sleep OFF until the physical plan in TESTING is completed.
+The Settings button (library and reader menu; called Light / Sleep before 0.9.1) offers separate native 0–24 brightness and warmth controls through `com.lab126.powerd` LIPC. Startup reads values and does not write them; only deliberate adjustments queue a write. No backlight sysfs write is used. Leave experimental power-button sleep OFF until the physical plan in TESTING is completed.
 
 ## Refresh and dark mode
 
@@ -65,3 +65,13 @@ sh /mnt/us/zreader/zreader-maintenance.sh clear-cache
 ```
 
 Books, notes, reading positions and settings are not affected.
+
+## Upload books over Wi-Fi (0.9.1)
+
+1. Make sure the Kindle and your phone or computer are on the same Wi-Fi.
+2. In the library, tap Settings, then Upload books over Wi-Fi.
+3. The screen shows an address such as `http://<Kindle address>:8080`. Open it in a browser on the phone or computer.
+4. Choose one or more PDF or EPUB files and tap Upload. The Kindle screen shows the progress and how many books arrived.
+5. Tap Close. The library refreshes and the new books appear.
+
+Rules: PDF and EPUB only, up to 500 MB per file. File names with folders, `..`, hidden names or unusual characters are refused. An existing book is never overwritten; a second copy is saved as “Name (2).epub”. An upload is refused if it would leave less than 6 GB free. The upload page exists only while that screen is open: closing it, sleeping, quitting or the idle timeout stops it immediately.
