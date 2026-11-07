@@ -23,7 +23,7 @@ work/
   zig/zig
   mupdf-1.28.6-source/
   zig-kindle-reader/   # this tree
-  testbooks/          # optional private regression inputs
+  testbooks/          # your own book copies for regression tests
 ```
 
 ## 2. Build libraries, then executables
@@ -56,4 +56,4 @@ Format and provenance: `dictionary/FORMAT`, Princeton notice: `dictionary/LICENS
 
 See TESTING. Rebuilding is documented, not a claim of bit-for-bit reproducibility across arbitrary toolchains. The included runtime is the earlier installed-version artifact; its binary checksum is in README.
 
-For every binary distribution, provide the full corresponding reader source, build scripts, fonts and licence notices **and the exact complete MuPDF source**. The pinned upstream URL is a retrieval recipe, not a promise that a third party will retain it forever. Before sharing a release, download and retain that original archive alongside the reader sources and offer both to recipients. Do not send only the binary or rely on a private repository that recipients cannot access. Preserve all bundled dependency licences from the MuPDF source distribution.
+If you share builds, the AGPL asks that recipients can get the matching source: point them to this repository and keep a copy of the exact MuPDF archive above, with its bundled licences.

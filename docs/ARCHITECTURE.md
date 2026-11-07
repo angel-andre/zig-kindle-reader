@@ -9,10 +9,10 @@
 - `zreader-maintenance.sh`: ownership-aware dump marker and independent best-effort restore-ui.
 - `kual/zreader/`: menu and launch glue.
 - `dictionary/`: WordNet source archive, rebuild program, index, format and licence.
-- `tests/`: historical reports, source harnesses, result summaries and synthetic fixtures. No private books or real-book page captures are included.
-- `shots/`: metadata-stripped synthetic UI PNG previews only.
-- `release/`: original 0.7 runtime plus hashes and installed-size record.
+- `tests/`: test reports, harnesses, results and generated sample files. No copyrighted books are included.
+- `shots/`: UI previews rendered from sample books.
+- `release/`: 0.8 and 0.7 runtimes plus checksums and size records.
 
 The display path uses the PW6 MTK hwtcon interface. Normal REAGL turns and GC16 FULL cleans are explicit policy choices, not framebuffer mode changes. Hardware inversion remains inherited. Brightness/warmth use powerd LIPC; no raw backlight writes. The launcher reads/restores the existing CPU governor; it does not remove platform services from disk.
 
-No app account or internet dictionary is required for reading. Runtime logs, notes, exports and book paths stay on the user's device unless they choose to copy them. No private device inventory belongs in this repository.
+No app account or internet dictionary is required for reading. Runtime logs, notes, exports and book paths stay on the user's device unless they choose to copy them.

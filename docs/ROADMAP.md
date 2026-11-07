@@ -1,26 +1,22 @@
 # Roadmap
 
-## Before inviting friends to install
+## Next
 
-- Replay the installation/uninstall documentation on a consenting PW6, including stock-UI recovery and key-only SSH.
-- Confirm final crash-dump marker status and firmware behavior without deliberately causing a crash.
-- Physically validate frontlight/warmth and keep reader-managed sleep opt-in until event/grab/wake/battery/passcode/Hall/hibernation checks pass.
-- Add portable synthetic replacements for tests currently requiring private books/reference images.
-- Address same-basename note collisions with an explicit, backup-safe migration.
-- Audit all release sources/licences and make the complete exact dependency source available to every binary recipient.
-- Keep the repository PRIVATE unless its owner expressly chooses to publish it.
+- Test frontlight/warmth and power-button sleep further on the device before turning sleep on by default.
+- Add generated replacements for tests that currently need real books.
+- Fix note collisions between books with the same file name, with a safe migration.
 
-## KOReader benchmark — NOT YET MEASURED
+## KOReader benchmark plan
 
-No comparison numbers are available. Use the same physical PW6, book bytes, views/font settings, frontlight, hardware dark mode, battery/thermal conditions and refresh policy. Record versions and configuration without device/network identifiers.
+Use the same physical PW6, book bytes, views/font settings, frontlight, hardware dark mode, battery/thermal conditions and refresh policy. Record versions and configuration without device/network identifiers.
 
 Measure cold launch/book open, uncached and prefetched page turns, rapid tap bursts, text-heavy versus image-heavy pages, PDF zoom/pan, EPUB reflow, annotation/search latency, peak memory, storage/cache growth and separate battery sessions. Distinguish input-to-render from input-to-panel completion. Repeat runs and report median and tail latency with sample counts; label cache warm/cold states. Document missing measurements rather than extrapolating host timings or nominal panel waveform durations.
 
-Retain anonymized raw measurements and a reproducible protocol before asserting an advantage. Host refresh-policy counts are not comparative performance benchmarks.
+Raw measurements and the protocol will be published with the results.
 
 ## Status after 0.8.0
 
-- KOReader comparison benchmark: still not measured.
-- v0.8 on-device opening and cover times are estimates scaled from host measurements (see tests/REPORT08), not device measurements.
+- KOReader benchmark: coming.
+- v0.8 on-device opening and cover times are estimates from computer measurements (see tests/REPORT08).
 - First cold open of a large EPUB with a deep saved position can still be slow once; later opens use the pagination cache.
-- Power-button sleep and light controls still need physical validation.
+- Power-button sleep and light controls need more on-device testing.

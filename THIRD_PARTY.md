@@ -6,7 +6,7 @@ The reader links statically with MuPDF 1.28.6. Distribution is under GNU Affero 
 
 Reader source, wrapper modifications, platform support, build scripts and UI font source asset are in this repository. No MuPDF source patches were found: file-by-file comparison against the original complete source archive matched. Exact source retrieval and SHA-256 are in `docs/BUILD.md`; upstream includes third-party library and bundled document-font notices, which must be retained. This repository does not claim to relicense those dependencies.
 
-**Binary-sharing requirement:** offer the complete matching reader sources and the exact MuPDF source archive (with bundled dependencies/licences) to every recipient, plus relevant build/install scripts. Before a release is shared, retain that source archive alongside the release; a pinned remote download is not a perpetual source-availability guarantee. Private visibility is fine only when recipients can actually obtain the corresponding source. No AGPL waiver or commercial MuPDF licence is claimed.
+**Sharing builds:** the AGPL asks that anyone who receives a binary can also get the matching source. The reader source is all in this repository; the MuPDF source archive is linked with its SHA-256 in `docs/BUILD.md`. If you redistribute builds, keep a copy of that archive available alongside them.
 
 ## WordNet 3.0
 
@@ -18,7 +18,7 @@ The UI uses Noto Sans; `src/fonts/NotoSans-OFL.txt` contains SIL OFL 1.1. MuPDF'
 
 ## Books and screenshots
 
-No private/copyrighted test books, extracted page-text traces or real-book page captures are distributed. Included EPUB/PDF test fixtures and screenshot content are synthetic project fixtures. Book titles mentioned in historical reports identify external regression inputs, not redistribution rights to those books. Host screenshot previews do not validate physical e-ink appearance.
+No copyrighted books or pages from them are distributed. The included test EPUB/PDF files and screenshots are generated samples. Book titles mentioned in test reports are books we tested with; you need your own copies to rerun those tests.
 
 ## External reference implementations
 

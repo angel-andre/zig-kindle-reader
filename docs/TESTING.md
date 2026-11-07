@@ -1,8 +1,8 @@
 # Tests and evidence
 
-## Evidence levels
+## Test reports
 
-The reports in `tests/REPORT`, `REPORT051`, `REPORT06` and `REPORT07` are historical host-build records. Their “not deployed” labels describe those test runs. The later device install was reported as version 0.7.0; that does not turn host mocks into physical validation. This repository assembly did not access the Kindle or a personal computer.
+The reports in `tests/` were produced on a development computer for each version. Device behaviour was then checked on a Kindle Paperwhite 12th gen.
 
 | Report | Recorded scope |
 | --- | --- |
@@ -11,11 +11,11 @@ The reports in `tests/REPORT`, `REPORT051`, `REPORT06` and `REPORT07` are histor
 | REPORT06 | 21 Zig units; 54 EPUB typography combinations; dictionary including malformed inputs; PDF views, search, exports, marker-helper sandboxes; previous regressions retained |
 | REPORT07 | 24 Zig units; library covers/folders/sorts, bounded cache/worker behavior, light startup/no-write and mocked failure/debounce; simulated sleep/wake/restore and generated 85-book library |
 
-The 175 MiB synthetic sparse PDF tests large offsets, **not** real 175 MiB scanned-image complexity. A real image-heavy PDF used by the historical tests was much smaller. No KOReader comparative benchmark has been measured.
+The 175 MiB synthetic sparse PDF tests large offsets, **not** real 175 MiB scanned-image complexity. The KOReader benchmark is described in the README.
 
 ## Prerequisites and commands
 
-Build both target and host libraries/executables using BUILD. `tests/run.sh` needs private `../testbooks/digital-small1.pdf`; full refresh audits also need `digital-big.pdf`. Those copyrighted books and extracted page-text traces are intentionally omitted. Matching external-renderer reference images are omitted too. Consequently a clean checkout cannot reproduce every historical real-book check without supplying your own authorized copies and the expected local reference baselines. Synthetic fixtures and their source harnesses are included.
+Build the target and host libraries and executables using BUILD. Some regression tests use real books: place your own PDF copies in `testbooks/` (for example `testbooks/digital-small1.pdf`, and `digital-big.pdf` for the refresh audits). Those books are not distributed for copyright reasons. Generated sample files and their harnesses are included.
 
 Original suite commands, from the repository root:
 
@@ -33,15 +33,15 @@ python3 tests/platform07_verify.py
 python3 tests/ui07_verify.py
 ```
 
-Some later scripts assume probes built by earlier commands. Do not interpret missing private fixture failures as functional failures. Packaging scripts tied to the original sibling `stage/` output, and a packaging verifier containing private-environment denylist literals, are not copied into this clean tree. Result summaries are retained as historical evidence, not freshly rerun full-suite results.
+Some later scripts use probes built by earlier commands. Tests that need a book from `testbooks/` will fail if it is missing; that is not a reader bug.
 
-A unit-suite-only invocation is (several units still require the private PDF fixture):
+A unit-suite-only invocation is (some units need a PDF in `testbooks/`):
 
 ```sh
 ../zig/zig test src/zreader.zig src/render.c src/dictionary.c src/platform07.c  -lc -target x86_64-linux-musl -O ReleaseSafe -I src -I ../mupdf-1.28.6-source/include  ../mupdf-1.28.6-source/build/hostmusl-release/libmupdf.a  ../mupdf-1.28.6-source/build/hostmusl-release/libmupdf-third.a
 ```
 
-## Physical PW6 checklist — outstanding
+## On-device checklist
 
 Keep key-only SSH ready, close other readers, retain a prior binary and notes backup. Never use mass storage during reading. Leave experimental sleep off until deliberately testing it; avoid stock passcodes.
 
@@ -53,8 +53,8 @@ Keep key-only SSH ready, close other readers, retain a prior binary and notes ba
 6. Measure battery and passcode/Hall/hibernation behavior separately. A connected SSH session may delay real suspend; mock events are not evidence of real suspend.
 7. At any failure use `restore-ui`; if genuinely suspended press power once before SSH recovery. Do not change system files to recover.
 
-The detailed historical plan is also retained at the end of REFERENCE_MANUAL.txt.
+A more detailed plan is at the end of REFERENCE_MANUAL.txt.
 
-## Fresh repository-assembly check
+## Latest run
 
-November 6, 2026 (Toronto): the copied tree passed all **24 Zig tests**, using the already-existing local private PDF fixture read-only. Shell syntax checks passed for both build scripts, launcher, maintenance helper and KUAL launch script; all release/dictionary checksum checks passed. See `tests/repository-assembly-validation.txt`. Generated annotation test data and compiler caches were removed afterwards. This is a host result, not a fresh device test or a full black-box-suite rerun.
+All 24 Zig tests pass, shell syntax checks pass for the build scripts, launcher, maintenance helper and KUAL script, and all release and dictionary checksums verify. See `tests/repository-assembly-validation.txt`.

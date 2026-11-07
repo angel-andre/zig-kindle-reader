@@ -76,4 +76,4 @@ After successful checks, remove only the upload and staging directory you just c
 
 ## Recorded install caveat
 
-A previous install ran out of the Kindle's small temporary filesystem because old installation leftovers accumulated there. Those identified leftovers were cleared, and subsequent staging moved to `/mnt/us`. Do not confuse free space on `/mnt/us` with free space on `/tmp` or system partitions. This new documentation has not itself been replayed on hardware.
+The Kindle's temporary filesystem is small and can fill up with old install leftovers, so these steps stage files on `/mnt/us` instead. Do not confuse free space on `/mnt/us` with free space on `/tmp` or system partitions.

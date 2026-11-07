@@ -1,6 +1,6 @@
 # Changelog
 
-Versions before 0.4 were internal prototypes; their details were not recorded.
+Earlier versions were early prototypes and are not listed.
 
 ## 0.8.0
 

@@ -12,7 +12,7 @@ It requests reader termination, UI process resumption, Pillow/statusbar restart,
 
 ## Cannot connect
 
-Check the trusted network route and current address locally, port 2222, the intended private key and the already-provisioned authorized public key. Keep key-only authentication. Do not enable no-auth access or upload a private key to the device/repository. USBNetwork was not validated here.
+Check the trusted network route and current address locally, port 2222, the intended private key and the already-provisioned authorized public key. Keep key-only authentication. Do not enable no-auth access or upload a private key to the device/repository. USBNetwork has not been tested.
 
 ## Touch does nothing
 
@@ -20,7 +20,7 @@ Quit KOReader first: it can hold the input grab. Do not run multiple readers con
 
 ## No space during install despite gigabytes free
 
-`/tmp` and `/mnt/us` are different filesystems. Stage on `/mnt/us`, check both with `df -k`, and inspect only your known staging leftovers. Do not erase all temporary files, crash archives indiscriminately or system partitions. BusyBox `sort` on the reference device has no `-h` option.
+`/tmp` and `/mnt/us` are different filesystems. Stage on `/mnt/us`, check both with `df -k`, and inspect only your known staging leftovers. Do not erase all temporary files, crash archives indiscriminately or system partitions. BusyBox `sort` on the Kindle has no `-h` option.
 
 ## Book missing, cover blank or progress unexpected
 
@@ -40,4 +40,4 @@ A missing/corrupt dictionary displays an error panel; reinstall `dictionary/word
 
 ## Light or sleep unavailable
 
-Missing/failed LIPC commands are reported as unavailable or restore the last confirmed values. No sysfs workaround is supported. Keep sleep OFF. Transition failures disable experimental sleep; restore the UI rather than repeatedly retrying. The detailed test plan is in TESTING and the historical manual.
+Missing/failed LIPC commands are reported as unavailable or restore the last confirmed values. No sysfs workaround is supported. Keep sleep OFF. Transition failures disable experimental sleep; restore the UI rather than repeatedly retrying. The detailed test plan is in TESTING and REFERENCE_MANUAL.txt.

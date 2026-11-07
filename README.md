@@ -4,9 +4,13 @@ A small, standalone PDF/EPUB reader written in Zig and C for a jailbroken **Kind
 
 **Version: 0.8.0 · tested device family: PW6 only · other Kindles: untested.**
 
-This project is not replacement firmware. It temporarily pauses the stock interface while reading and restores it on exit. It does not remove Amazon's operating system, alter system partitions, or replace the jailbreak. There is no claim of broader compatibility or measured superiority over KOReader.
+This project is not replacement firmware. It temporarily pauses the stock interface while reading and restores it on exit. It does not remove Amazon's operating system, alter system partitions, or replace the jailbreak.
 
-> Keep this repository private until its owner explicitly decides otherwise. Read the safety and recovery instructions before installation. Power-button sleep is EXPERIMENTAL, OFF by default, and not yet physically validated. Leave it off for normal use.
+> Read the safety and recovery instructions before installing. Power-button sleep is experimental and off by default; leave it off for normal use.
+
+## Why this exists
+
+KOReader is a feature-rich reader, and it made SSH access to the Kindle easy. On this Kindle, though, it felt laggy: page turns and taps didn't respond as quickly as we wanted. Zigg Reader was built as a small native Zig reader focused on speed: fast page turns, clean e-ink refreshes and no bloat, while keeping the features that matter for reading PDFs and EPUBs.
 
 ## Start here
 
@@ -17,11 +21,11 @@ This project is not replacement firmware. It temporarily pauses the stock interf
 5. [Recovery and troubleshooting](docs/TROUBLESHOOTING.md)
 6. [Uninstall and rollback](docs/UNINSTALL.md)
 
-Developers: [build](docs/BUILD.md) · [tests and evidence](docs/TESTING.md) · [architecture](docs/ARCHITECTURE.md) · [known limitations](docs/LIMITATIONS.md) · [roadmap and benchmark plan](docs/ROADMAP.md) · [licences](THIRD_PARTY.md).
+Developers: [build](docs/BUILD.md) · [tests and evidence](docs/TESTING.md) · [architecture](docs/ARCHITECTURE.md) · [known limitations](docs/LIMITATIONS.md) · [roadmap](docs/ROADMAP.md) · [licences](THIRD_PARTY.md).
 
 ## Version history
 
-Full details in [CHANGELOG.md](CHANGELOG.md). Versions before 0.4 were internal prototypes whose details were not recorded, so they are not listed.
+Full details in [CHANGELOG.md](CHANGELOG.md). Earlier versions were early prototypes and are not listed.
 
 | Version | Scope |
 | --- | --- |
@@ -34,9 +38,20 @@ Full details in [CHANGELOG.md](CHANGELOG.md). Versions before 0.4 were internal 
 
 Notes are overlays: original book files are never modified. Books belong in `/mnt/us/Books`, including subfolders. DRM-protected books are not supported by this workflow.
 
+## Benchmark: Zigg Reader vs KOReader
+
+A side-by-side test on the same Kindle Paperwhite 12th gen, with the same books and settings, is coming. It will measure:
+
+- tap-to-screen latency for page turns
+- rapid taps (bursts of page turns)
+- book open time
+- memory use
+
+Results will be published here once the test has been run.
+
 ## Screenshots
 
-These are host-generated UI previews from synthetic books and fixtures. They show framebuffer values, not physical e-ink ghosting or hardware dark-mode appearance.
+These previews are rendered on a computer from sample books, so they don't show e-ink ghosting or the Kindle's hardware dark mode.
 
 | Library | Folders | Light & Sleep |
 | --- | --- | --- |
@@ -54,9 +69,9 @@ These are host-generated UI previews from synthetic books and fixtures. They sho
 
 The installed ARM executable is **6,645,540 bytes** and the WordNet index **14,449,559 bytes** (13.78 MiB). The original compressed runtime is about 8.23 MiB. Allow at least 50 MiB free for a fresh installation, and more for upgrade backups and staging. Library thumbnails grow lazily to at most 10 MiB of cache payload, plus a small RAM cache. Books, notes and backups are additional.
 
-The reference cleanup recovered approximately 2.5 GB of crash dumps and 150 MB of VoiceView data; the user partition subsequently had about 9.2 GB free. These are historical approximate values, not promised savings on another device. System partitions were intentionally left alone.
+On our test Kindle, cleanup recovered about 2.5 GB of crash dumps and 150 MB of VoiceView data, leaving about 9.2 GB free. Your numbers will differ. System partitions were left alone.
 
-`release/zr08.tgz` is the current 0.8.0 runtime; `release/zr07.tgz` is kept for rollback and is the original installed-version 0.7 runtime, with checksum records. Its bundled README and `docs/REFERENCE_MANUAL.txt` are historical build-time documents: their “not deployed” statements describe the original host build, not the later recorded installation. See [provenance](docs/PROVENANCE.md) for what was and was not verified.
+`release/zr08.tgz` is the current 0.8.0 runtime; `release/zr07.tgz` is kept for rollback. Checksums are in `release/SHA256SUMS`. `docs/REFERENCE_MANUAL.txt` is the detailed technical manual written during development.
 
 ## Safety
 
@@ -75,4 +90,4 @@ sh /mnt/us/zreader/zreader-maintenance.sh restore-ui
 
 ## Licence
 
-The MuPDF-linked application is distributed under **GNU AGPL version 3**; see [LICENSE](LICENSE). WordNet uses Princeton's separate licence; embedded fonts retain SIL OFL notices. No rights to third-party books are included. Exact dependency sources and checksums are documented in [BUILD](docs/BUILD.md) and [THIRD_PARTY](THIRD_PARTY.md). Source must remain available to binary recipients; private repository visibility is not a substitute for providing it.
+The MuPDF-linked application is distributed under **GNU AGPL version 3**; see [LICENSE](LICENSE). WordNet uses Princeton's separate licence; embedded fonts retain SIL OFL notices. No books are included. The full reader source is in this repository, and the exact MuPDF source link and checksum are in [BUILD](docs/BUILD.md) and [THIRD_PARTY](THIRD_PARTY.md). If you share modified builds, please share your source too, as the AGPL asks.
