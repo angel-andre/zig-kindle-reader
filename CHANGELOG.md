@@ -2,6 +2,10 @@
 
 Earlier versions were early prototypes and are not listed.
 
+## 0.9.8
+
+Collections, favourites and size sort: long-press a book in the library for Favourite, Add to collection, Remove from collection or Cancel; favourites get a small star. The Folder button now opens “Show”: All books, the folders, Favourites, each collection and “+ New collection” (the current sort is kept). Long-press a collection there to rename or delete it; deleting never removes books. Names use the on-screen keyboard. The Sort button adds “Size: largest first” and “Size: smallest first”, using the file sizes the library already reads; the chosen sort is kept across restarts. Collections are stored in `state/collections.tsv`; a book renamed with an upload “(N)” suffix stays in its lists. Includes 0.9.7 reading stats.
+
 ## 0.9.7
 
 Reading stats, kept on the Kindle only: Settings › Reading stats shows today, last 7 days and all-time reading time, books finished, a day streak, a 7-day bar chart and the most recent books; Reset stats asks for a second tap. Contents shows the open book’s time read, pages, sessions and percent, plus an estimate of the time left for EPUBs. Only active reading counts (a page on screen, menu closed, awake, a page turn within 2.5 minutes). Stats are saved in `state/stats.tsv` at most once a minute and on close, sleep and exit, never during page turns. Book pages are unchanged. (Released on the device together with 0.9.8.)

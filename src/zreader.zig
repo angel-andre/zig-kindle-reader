@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.9.7";
+const VERSION = "0.9.8";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 
 // ---------------- C ----------------
@@ -1896,7 +1896,7 @@ fn loadToc() void {
 }
 
 // ---------------- v0.7 library, device controls and opt-in sleep ----------------
-const SORT_NAMES = [_][]const u8{ "Recent", "Title", "Progress" };
+const SORT_NAMES = [_][]const u8{ "Recent", "Title", "Progress", "Size: largest first", "Size: smallest first" };
 var lib_sort: usize = 0;
 var lib_visible: [4000]usize = undefined;
 var nvisible: usize = 0;
@@ -1930,7 +1930,7 @@ fn init07() void {
     if (readFile(ui07Path(&path))) |data| {
         defer alloc.free(data);
         if (jsonNum(data, "sort")) |v| {
-            if (v >= 0 and v <= 2) lib_sort = @intFromFloat(v);
+            if (v >= 0 and v < SORT_NAMES.len) lib_sort = @intFromFloat(v);
         }
         power_sleeps = (jsonNum(data, "power_sleeps") orelse 0) == 1;
         if (!opts.clean_cli) opts.clean_scans = (jsonNum(data, "clean_scans") orelse 1) != 0;
@@ -1949,16 +1949,26 @@ fn libraryControl(i: i32) Rect {
     return .{ .x = 70 + i * 380, .y = 220, .w = 360, .h = 85 };
 }
 fn libraryCount() usize {
-    return if (folder_picker) nfolders + 1 else nvisible;
+    return if (folder_picker) nfolders + 3 + ncoll else nvisible;
 }
 fn filterLibrary() void {
     nvisible = 0;
     if (folder_filter > nfolders) folder_filter = 0;
     for (lib[0..nlib], 0..) |e, i| {
         if (folder_filter != 0 and !eql(e.folder, folders[folder_filter - 1])) continue;
+        if (coll_filter == 0 and !e.fav) continue;
+        if (coll_filter > 0 and (e.cmask >> @intCast(coll_filter - 1)) & 1 == 0) continue;
         lib_visible[nvisible] = i;
         nvisible += 1;
     }
+    var ob: [400]u8 = undefined;
+    var on: usize = 0;
+    for (lib_visible[0..@min(nvisible, 5)]) |li| {
+        const t = lib[li].title;
+        const s = std.fmt.bufPrint(ob[on..], "{s}{s}", .{ if (on > 0) " | " else "", t[0..@min(t.len, 60)] }) catch break;
+        on += s.len;
+    }
+    logf("library view: sort={s} shown={d}: {s}", .{ SORT_NAMES[lib_sort], nvisible, ob[0..on] });
 }
 fn folderLess(_: void, a: []const u8, b: []const u8) bool {
     return std.ascii.lessThanIgnoreCase(a, b);
@@ -2286,7 +2296,7 @@ fn tick07() void {
 }
 
 // ---------------- library ----------------
-const Entry = struct { path: []u8, title: []const u8, folder: []const u8, opened: i64, progress: i32, bytes: u64 = 0, epub: bool = false };
+const Entry = struct { path: []u8, title: []const u8, folder: []const u8, opened: i64, progress: i32, bytes: u64 = 0, epub: bool = false, fav: bool = false, cmask: u64 = 0 };
 var books_bytes: u64 = 0;
 var storage_free: u64 = 0;
 var storage_total: u64 = 0;
@@ -2338,6 +2348,8 @@ fn scanDir(path: []const u8, depth: u32) void {
 fn libLess(_: void, a: Entry, b: Entry) bool {
     if (lib_sort == 0 and a.opened != b.opened) return a.opened > b.opened;
     if (lib_sort == 2 and a.progress != b.progress) return a.progress > b.progress;
+    if (lib_sort == 3 and a.bytes != b.bytes) return a.bytes > b.bytes;
+    if (lib_sort == 4 and a.bytes != b.bytes) return a.bytes < b.bytes;
     return std.ascii.lessThanIgnoreCase(a.title, b.title);
 }
 fn scanLibrary() void {
@@ -2349,6 +2361,7 @@ fn scanLibrary() void {
     _ = zr_storage("/mnt/us", &storage_free, &storage_total);
     scanDir(opts.books, 0);
     if (eql(opts.books, "/mnt/us/Books")) scanDir("/mnt/us/documents", 0);
+    applyCollections();
     sortLibrary();
     logf("library: {d} books under {s}", .{ nlib, opts.books });
 }
@@ -2974,8 +2987,9 @@ fn libPath(k: usize, z: *[1200]u8) ?[*:0]const u8 {
     return p.ptr;
 }
 fn libFocus() void {
-    if (last_cover_page != list_page or last_cover_sort != lib_sort or last_cover_folder != folder_filter) {
-        zr_thumbs_focus(); last_cover_page = list_page; last_cover_sort = lib_sort; last_cover_folder = folder_filter;
+    const filt = folder_filter + 1000 * @as(usize, @intCast(coll_filter + 1));
+    if (last_cover_page != list_page or last_cover_sort != lib_sort or last_cover_folder != filt) {
+        zr_thumbs_focus(); last_cover_page = list_page; last_cover_sort = lib_sort; last_cover_folder = filt;
     }
 }
 // Visible rows first (oldest request = served first), then next and previous
@@ -3106,7 +3120,7 @@ fn formatBookCount(buf: []u8, shown: usize, all: usize, filtered: bool) []const 
 }
 fn libraryFooter(line: []u8) []const u8 {
     var a: [32]u8 = undefined; var b: [32]u8 = undefined; var c: [32]u8 = undefined; var n: [48]u8 = undefined;
-    const count = formatBookCount(&n, nvisible, nlib, folder_filter != 0);
+    const count = formatBookCount(&n, nvisible, nlib, folder_filter != 0 or coll_filter >= 0);
     return if (storage_total > 0)
         std.fmt.bufPrint(line, "{s}  \xc2\xb7  Books {s}  \xc2\xb7  {s} free / {s}", .{ count, formatBytes(books_bytes, &c), formatBytes(storage_free, &a), formatBytes(storage_total, &b) }) catch ""
     else
@@ -3116,12 +3130,13 @@ var last_cover_page: usize = std.math.maxInt(usize);
 var last_cover_sort: usize = 255;
 var last_cover_folder: usize = std.math.maxInt(usize);
 fn drawLibrary() void {
-    header(if (folder_picker) "Folders" else "Library", book.open);
+    header(if (folder_picker) "Show" else "Library", book.open);
     drawBattery();
     libFocus();
     button(libraryControl(0), SORT_NAMES[lib_sort], false);
     var label: [1100]u8 = undefined;
-    button(libraryControl(1), std.fmt.bufPrint(&label, "Folder: {s}", .{if (folder_filter == 0) "All" else folders[folder_filter - 1]}) catch "Folders", folder_picker);
+    const flabel = if (coll_filter == 0) "Favourites" else if (coll_filter > 0) (std.fmt.bufPrint(&label, "{s}", .{collName(@intCast(coll_filter - 1))}) catch "Collection") else std.fmt.bufPrint(&label, "Folder: {s}", .{if (folder_filter == 0) "All" else folders[folder_filter - 1]}) catch "Folders";
+    button(libraryControl(1), flabel, folder_picker);
     button(libraryControl(2), "Settings", false);
     const total = libraryCount();
     const per = rowsPerPage();
@@ -3131,15 +3146,21 @@ fn drawLibrary() void {
         if (k >= total) break;
         const r = rowRect(i);
         if (folder_picker) {
-            const name = if (k == 0) "All books" else folders[k - 1];
-            textFit(SERIF, 42, @floatFromInt(r.x + 20), @floatFromInt(r.y + 85), name, @floatFromInt(r.w - 40), 0);
+            var nb: [200]u8 = undefined;
+            const name = pickerLabel(k, &nb);
+            const sel = pickerSelected(k);
+            if (sel and k > nfolders) fill(.{ .x = r.x - 40, .y = r.y + 50, .w = 12, .h = 50 }, 0x00);
+            if (k == favRow()) fillStar(r.x + 40, r.y + 72, 22, 0x00);
+            textFit(SERIF, 42, @floatFromInt(r.x + (if (k == favRow()) @as(i32, 80) else 20)), @floatFromInt(r.y + 85), name, @floatFromInt(r.w - 100), if (k == newRow()) 0x55 else 0);
         } else {
             const e = lib[lib_visible[k]];
             if (!drawThumb(e.path, .{ .x = r.x, .y = r.y + 8, .w = 96, .h = 128 })) {
                 frame(.{ .x = r.x, .y = r.y + 8, .w = 96, .h = 128 }, 2, 0xAA);
                 textCenter(SANS, 20, .{ .x = r.x, .y = r.y + 8, .w = 96, .h = 128 }, if (e.epub) "EPUB" else "PDF", 0x55);
             }
-            textFit(SERIF, 38, @floatFromInt(r.x + 125), @floatFromInt(r.y + 55), e.title, @floatFromInt(r.w - 125), 0);
+            if (e.fav) fillStar(r.x + 142, r.y + 42, 17, 0x00);
+            const tx: i32 = if (e.fav) 170 else 125;
+            textFit(SERIF, 38, @floatFromInt(r.x + tx), @floatFromInt(r.y + 55), e.title, @floatFromInt(r.w - tx), 0);
             var subbuf: [1200]u8 = undefined;
             var sizebuf: [32]u8 = undefined;
             const sub = std.fmt.bufPrint(&subbuf, "{s}  \xc2\xb7  {s}  \xc2\xb7  {s}", .{ if (e.epub) "EPUB" else "PDF", formatBytes(e.bytes, &sizebuf), e.folder }) catch "";
@@ -3155,6 +3176,7 @@ fn drawLibrary() void {
     var line: [200]u8 = undefined;
     text(SANS, 26, 70, @floatFromInt(@as(i32, @intCast(H)) - 180), libraryFooter(&line), 0x33);
     pager(total);
+    drawLibMenu();
     drawToast();
 }
 
@@ -3416,6 +3438,10 @@ var note_edit_idx: usize = 0;
 var note_buf: [480]u8 = undefined;
 var note_len: usize = 0;
 var note_shift = false;
+const EditTarget = enum { note, coll_new, coll_rename };
+var edit_target: EditTarget = .note;
+var edit_coll: usize = 0;
+var edit_add_entry: ?usize = null;
 const NOTE_PUNCT = ".,?!;:()\"/";
 fn noteKey(row: usize, col: usize) Rect {
     const bw = @divTrunc(@as(i32, @intCast(W)) - 140, 10);
@@ -3451,9 +3477,11 @@ fn openNoteEditor(k: usize) void {
     note_len = @min(c.len, note_buf.len);
     @memcpy(note_buf[0..note_len], c[0..note_len]);
     note_shift = noteAutoShift();
+    edit_target = .note;
     showScreen(.noteedit);
 }
 fn closeNoteEditor(save: bool) void {
+    if (edit_target != .note) return closeNameEditor(save);
     if (save and note_edit_idx < book.nnotes) {
         const n = &book.notes[note_edit_idx];
         const t = std.mem.trim(u8, note_buf[0..note_len], " ");
@@ -3500,8 +3528,8 @@ fn drawWrapped(font: c_int, size: f32, r: Rect, s: []const u8, max_lines: usize,
     }
 }
 fn drawNoteEditor() void {
-    header("Note", true);
-    if (note_edit_idx < book.nnotes) {
+    header(if (edit_target == .note) "Note" else if (edit_target == .coll_new) "New collection" else "Rename collection", true);
+    if (edit_target == .note and note_edit_idx < book.nnotes) {
         const n = &book.notes[note_edit_idx];
         var q: [600]u8 = undefined;
         const qt = std.fmt.bufPrint(&q, "p. {d}  \xe2\x80\x9c{s}\xe2\x80\x9d", .{ n.page + 1, n.text[0..@min(n.text.len, 500)] }) catch n.text;
@@ -3880,6 +3908,436 @@ fn statsTap(x: i32, y: i32) void {
     }
 }
 
+// ---- v0.9.8 collections and favourites ----
+// DATA/state/collections.tsv: "c <name>" lines (order = display order) and
+// "m <collection #, or * for favourites> <bytes> <book path>" member lines.
+// Members are matched by path; a book whose path disappeared is re-attached to
+// a single unclaimed book with the same size and the same title ignoring an
+// upload " (N)" suffix. Deleting a collection only removes these lines.
+const MAXCOLL = 60;
+var coll_names: [MAXCOLL][64]u8 = undefined;
+var coll_lens: [MAXCOLL]usize = undefined;
+var ncoll: usize = 0;
+const Member = struct { coll: i32, bytes: u64, path: []u8 };
+var members: [8000]Member = undefined;
+var nmembers: usize = 0;
+var coll_loaded = false;
+var coll_filter: i32 = -1; // -1 none, 0 favourites, k = collection k-1
+const LibMenu = enum { none, book, add, remove, coll, confirm_delete };
+var lib_menu: LibMenu = .none;
+var lib_menu_entry: usize = 0;
+var lib_menu_coll: usize = 0;
+fn collName(i: usize) []const u8 {
+    return coll_names[i][0..coll_lens[i]];
+}
+fn collPath(out: []u8) []const u8 {
+    return std.fmt.bufPrint(out, "{s}/state/collections.tsv", .{opts.data}) catch "";
+}
+fn loadCollections() void {
+    if (coll_loaded) return;
+    coll_loaded = true;
+    var pb: [1200]u8 = undefined;
+    var zb: [1200]u8 = undefined;
+    const z = std.fmt.bufPrintSentinel(&zb, "{s}", .{collPath(&pb)}, 0) catch return;
+    const data = readFile(z) orelse return;
+    defer alloc.free(data);
+    var lines = std.mem.splitScalar(u8, data, '\n');
+    while (lines.next()) |line| {
+        var f = std.mem.splitScalar(u8, line, '\t');
+        const kind = f.next() orelse continue;
+        if (eql(kind, "c") and ncoll < MAXCOLL) {
+            const n = f.rest();
+            if (n.len == 0) continue;
+            coll_lens[ncoll] = @min(n.len, 63);
+            @memcpy(coll_names[ncoll][0..coll_lens[ncoll]], n[0..coll_lens[ncoll]]);
+            ncoll += 1;
+        } else if (eql(kind, "m") and nmembers < members.len) {
+            const cs = f.next() orelse continue;
+            const c: i32 = if (eql(cs, "*")) -1 else std.fmt.parseInt(i32, cs, 10) catch continue;
+            const bytes = std.fmt.parseInt(u64, f.next() orelse continue, 10) catch 0;
+            const p = f.rest();
+            if (p.len == 0 or c >= @as(i32, @intCast(ncoll))) continue;
+            members[nmembers] = .{ .coll = c, .bytes = bytes, .path = alloc.dupe(u8, p) catch continue };
+            nmembers += 1;
+        }
+    }
+}
+fn saveCollections() void {
+    var b = Buf.init(4096);
+    defer b.deinit();
+    b.put("zrcoll\t1\n");
+    for (0..ncoll) |i| {
+        b.put("c\t");
+        b.put(collName(i));
+        b.put("\n");
+    }
+    for (members[0..nmembers]) |m| {
+        if (m.coll < 0) b.put("m\t*\t") else b.print("m\t{d}\t", .{m.coll});
+        b.print("{d}\t", .{m.bytes});
+        b.put(m.path);
+        b.put("\n");
+    }
+    var pb: [1200]u8 = undefined;
+    if (!writeFileAtomic(collPath(&pb), b.slice())) toast("Could not save collections", .{});
+}
+fn baseTitle(t: []const u8) []const u8 {
+    // "Name (2)" -> "Name"
+    if (t.len > 4 and t[t.len - 1] == ')') {
+        if (std.mem.lastIndexOf(u8, t, " (")) |i| {
+            const num = t[i + 2 .. t.len - 1];
+            if (num.len > 0 and num.len < 4 and for (num) |c| {
+                if (!std.ascii.isDigit(c)) break false;
+            } else true) return t[0..i];
+        }
+    }
+    return t;
+}
+fn pathTitle(p: []const u8) []const u8 {
+    const base = if (std.mem.lastIndexOfScalar(u8, p, '/')) |i| p[i + 1 ..] else p;
+    const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse base.len;
+    return base[0..dot];
+}
+fn entryIndexByPath(p: []const u8) ?usize {
+    for (lib[0..nlib], 0..) |e, i| if (eql(e.path, p)) return i;
+    return null;
+}
+fn applyCollections() void {
+    loadCollections();
+    for (lib[0..nlib]) |*e| {
+        e.fav = false;
+        e.cmask = 0;
+    }
+    var changed = false;
+    for (members[0..nmembers]) |*m| {
+        var idx = entryIndexByPath(m.path);
+        if (idx == null) {
+            // re-attach a moved/renamed copy: same size, same base title, path not already a member of this set
+            var found: ?usize = null;
+            var count: usize = 0;
+            for (lib[0..nlib], 0..) |e, i| {
+                if (e.bytes != m.bytes or m.bytes == 0) continue;
+                if (!std.ascii.eqlIgnoreCase(baseTitle(e.title), baseTitle(pathTitle(m.path)))) continue;
+                var taken = false;
+                for (members[0..nmembers]) |o| if (o.coll == m.coll and eql(o.path, e.path)) {
+                    taken = true;
+                };
+                if (taken) continue;
+                found = i;
+                count += 1;
+            }
+            if (count > 1) {
+                // several identical copies: prefer the single one no list knows about yet
+                count = 0;
+                for (lib[0..nlib], 0..) |e, i| {
+                    if (e.bytes != m.bytes or !std.ascii.eqlIgnoreCase(baseTitle(e.title), baseTitle(pathTitle(m.path)))) continue;
+                    var known = false;
+                    for (members[0..nmembers]) |o| if (eql(o.path, e.path)) {
+                        known = true;
+                    };
+                    if (known) continue;
+                    found = i;
+                    count += 1;
+                }
+            }
+            if (count == 1) {
+                const np = alloc.dupe(u8, lib[found.?].path) catch continue;
+                logf("collections: re-attached a moved book", .{});
+                alloc.free(m.path);
+                m.path = np;
+                idx = found;
+                changed = true;
+            }
+        }
+        const i = idx orelse continue;
+        if (m.coll < 0) lib[i].fav = true else lib[i].cmask |= @as(u64, 1) << @intCast(m.coll);
+    }
+    if (changed) saveCollections();
+}
+fn memberIndex(coll: i32, p: []const u8) ?usize {
+    for (members[0..nmembers], 0..) |m, i| if (m.coll == coll and eql(m.path, p)) return i;
+    return null;
+}
+fn removeMemberAt(i: usize) void {
+    alloc.free(members[i].path);
+    var j = i;
+    while (j + 1 < nmembers) : (j += 1) members[j] = members[j + 1];
+    nmembers -= 1;
+}
+fn setMember(coll: i32, e: *const Entry, on: bool) void {
+    if (memberIndex(coll, e.path)) |i| {
+        if (!on) removeMemberAt(i);
+    } else if (on and nmembers < members.len) {
+        members[nmembers] = .{ .coll = coll, .bytes = e.bytes, .path = alloc.dupe(u8, e.path) catch return };
+        nmembers += 1;
+    }
+}
+fn refreshLibraryAfterCollections() void {
+    saveCollections();
+    applyCollections();
+    filterLibrary();
+    const per = rowsPerPage();
+    if (list_page * per >= @max(libraryCount(), 1)) list_page = 0;
+    markFull(WF_REAGL);
+}
+fn deleteCollection(c: usize) void {
+    var i: usize = 0;
+    while (i < nmembers) {
+        if (members[i].coll == @as(i32, @intCast(c))) {
+            removeMemberAt(i);
+            continue;
+        }
+        if (members[i].coll > @as(i32, @intCast(c))) members[i].coll -= 1;
+        i += 1;
+    }
+    var j = c;
+    while (j + 1 < ncoll) : (j += 1) {
+        coll_names[j] = coll_names[j + 1];
+        coll_lens[j] = coll_lens[j + 1];
+    }
+    ncoll -= 1;
+    if (coll_filter == @as(i32, @intCast(c)) + 1) coll_filter = -1 else if (coll_filter > @as(i32, @intCast(c)) + 1) coll_filter -= 1;
+    logf("collection deleted (books untouched)", .{});
+}
+// picker rows (folder rows keep their 0.9.7 positions): 0 All books,
+// 1..nfolders folders, then Favourites, each collection, "+ New collection".
+fn favRow() usize {
+    return nfolders + 1;
+}
+fn newRow() usize {
+    return nfolders + 2 + ncoll;
+}
+fn pickerColl(k: usize) ?usize {
+    return if (k >= favRow() + 1 and k < newRow()) k - favRow() - 1 else null;
+}
+fn pickerLabel(k: usize, out: []u8) []const u8 {
+    if (k == 0) return "All books";
+    if (k <= nfolders) return folders[k - 1];
+    if (k == favRow()) return "Favourites";
+    if (pickerColl(k)) |c| return std.fmt.bufPrint(out, "Collection: {s}", .{collName(c)}) catch "";
+    return "+ New collection";
+}
+fn pickerSelected(k: usize) bool {
+    if (k == 0) return coll_filter < 0 and folder_filter == 0;
+    if (k <= nfolders) return coll_filter < 0 and folder_filter == k;
+    if (k == favRow()) return coll_filter == 0;
+    if (pickerColl(k)) |c| return coll_filter == @as(i32, @intCast(c)) + 1;
+    return false;
+}
+fn pickerChoose(k: usize) void {
+    folder_filter = 0;
+    coll_filter = -1;
+    if (k >= 1 and k <= nfolders) folder_filter = k else if (k == favRow()) coll_filter = 0 else if (pickerColl(k)) |c| {
+        coll_filter = @intCast(c + 1);
+    }
+}
+fn fillStar(cx: i32, cy: i32, r: i32, g: u8) void {
+    var pts: [10][2]f32 = undefined;
+    for (0..10) |i| {
+        const ang = -std.math.pi / 2.0 + @as(f32, @floatFromInt(i)) * std.math.pi / 5.0;
+        const rr: f32 = if (i % 2 == 0) @floatFromInt(r) else @as(f32, @floatFromInt(r)) * 0.42;
+        pts[i] = .{ @as(f32, @floatFromInt(cx)) + rr * @cos(ang), @as(f32, @floatFromInt(cy)) + rr * @sin(ang) };
+    }
+    var y = cy - r;
+    while (y <= cy + r) : (y += 1) {
+        var x = cx - r;
+        while (x <= cx + r) : (x += 1) {
+            const px = @as(f32, @floatFromInt(x)) + 0.5;
+            const py = @as(f32, @floatFromInt(y)) + 0.5;
+            var inside = false;
+            var j: usize = 9;
+            for (0..10) |i| {
+                const a = pts[i];
+                const b = pts[j];
+                if ((a[1] > py) != (b[1] > py) and px < (b[0] - a[0]) * (py - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside;
+                j = i;
+            }
+            if (inside and x >= 0 and y >= 0 and x < W and y < H) fb[@as(usize, @intCast(y)) * STRIDE + @as(usize, @intCast(x))] = g;
+        }
+    }
+}
+fn libMenuRect(rows: usize) Rect {
+    const h: i32 = 140 + @as(i32, @intCast(rows)) * 120;
+    return .{ .x = 170, .y = @divTrunc(@as(i32, @intCast(H)) - h, 2), .w = @as(i32, @intCast(W)) - 340, .h = h };
+}
+fn libMenuButton(rows: usize, i: usize) Rect {
+    const m = libMenuRect(rows);
+    return .{ .x = m.x + 40, .y = m.y + 110 + @as(i32, @intCast(i)) * 120, .w = m.w - 80, .h = 100 };
+}
+fn libMenuItems(out: *[MAXCOLL + 4][96]u8, lens: *[MAXCOLL + 4]usize, act: *[MAXCOLL + 4]i32) usize {
+    var n: usize = 0;
+    const put = struct {
+        fn f(o: *[MAXCOLL + 4][96]u8, l: *[MAXCOLL + 4]usize, a: *[MAXCOLL + 4]i32, k: *usize, s: []const u8, code: i32) void {
+            const len = @min(s.len, 95);
+            @memcpy(o[k.*][0..len], s[0..len]);
+            l[k.*] = len;
+            a[k.*] = code;
+            k.* += 1;
+        }
+    }.f;
+    const e = &lib[lib_menu_entry];
+    switch (lib_menu) {
+        .book => {
+            put(out, lens, act, &n, if (e.fav) "Remove from Favourites" else "Favourite", 1);
+            put(out, lens, act, &n, "Add to collection", 2);
+            if (e.cmask != 0) put(out, lens, act, &n, "Remove from collection", 3);
+            put(out, lens, act, &n, "Cancel", 0);
+        },
+        .add, .remove => {
+            for (0..ncoll) |c| {
+                const member = (e.cmask >> @intCast(c)) & 1 != 0;
+                if ((lib_menu == .add) == member) continue;
+                if (n >= 9) break;
+                put(out, lens, act, &n, collName(c), 100 + @as(i32, @intCast(c)));
+            }
+            if (lib_menu == .add) put(out, lens, act, &n, "+ New collection", 4);
+            put(out, lens, act, &n, "Cancel", 0);
+        },
+        .coll => {
+            put(out, lens, act, &n, "Rename", 5);
+            put(out, lens, act, &n, "Delete collection", 6);
+            put(out, lens, act, &n, "Cancel", 0);
+        },
+        .confirm_delete => {
+            put(out, lens, act, &n, "Delete (books are kept)", 7);
+            put(out, lens, act, &n, "Cancel", 0);
+        },
+        .none => {},
+    }
+    return n;
+}
+fn drawLibMenu() void {
+    if (lib_menu == .none) return;
+    var items: [MAXCOLL + 4][96]u8 = undefined;
+    var lens: [MAXCOLL + 4]usize = undefined;
+    var act: [MAXCOLL + 4]i32 = undefined;
+    const n = libMenuItems(&items, &lens, &act);
+    const m = libMenuRect(n);
+    fill(m.grow(6), 0xFF);
+    frame(m, 4, 0x00);
+    var tb: [200]u8 = undefined;
+    const title = switch (lib_menu) {
+        .coll, .confirm_delete => std.fmt.bufPrint(&tb, "Collection: {s}", .{collName(lib_menu_coll)}) catch "",
+        .add => "Add to collection",
+        .remove => "Remove from collection",
+        else => lib[lib_menu_entry].title,
+    };
+    textFit(SERIF_BOLD, 38, @floatFromInt(m.x + 40), @floatFromInt(m.y + 70), title, @floatFromInt(m.w - 80), 0);
+    for (0..n) |i| button(libMenuButton(n, i), items[i][0..lens[i]], false);
+}
+fn libMenuTap(x: i32, y: i32) void {
+    var items: [MAXCOLL + 4][96]u8 = undefined;
+    var lens: [MAXCOLL + 4]usize = undefined;
+    var act: [MAXCOLL + 4]i32 = undefined;
+    const n = libMenuItems(&items, &lens, &act);
+    var code: i32 = 0;
+    var hit = false;
+    for (0..n) |i| if (libMenuButton(n, i).contains(x, y)) {
+        code = act[i];
+        hit = true;
+    };
+    if (!hit and libMenuRect(n).contains(x, y)) return;
+    const e = &lib[lib_menu_entry];
+    lib_menu = .none;
+    switch (code) {
+        1 => {
+            setMember(-1, e, !e.fav);
+            toast("{s}", .{if (e.fav) "Removed from Favourites" else "Added to Favourites"});
+        },
+        2 => {
+            lib_menu = .add;
+            return markFull(WF_REAGL);
+        },
+        3 => {
+            lib_menu = .remove;
+            return markFull(WF_REAGL);
+        },
+        4 => return openNameEditor(.coll_new, 0, lib_menu_entry),
+        5 => return openNameEditor(.coll_rename, lib_menu_coll, null),
+        6 => {
+            lib_menu = .confirm_delete;
+            return markFull(WF_REAGL);
+        },
+        7 => {
+            deleteCollection(lib_menu_coll);
+            toast("Collection deleted; books kept", .{});
+        },
+        else => {
+            if (code >= 100) {
+                const c: usize = @intCast(code - 100);
+                const was_add = (e.cmask >> @intCast(c)) & 1 == 0;
+                setMember(@intCast(c), e, was_add);
+                toast("{s} {s}", .{ if (was_add) "Added to" else "Removed from", collName(c) });
+            } else return markFull(WF_REAGL);
+        },
+    }
+    refreshLibraryAfterCollections();
+}
+fn libLongPress(x: i32, y: i32) void {
+    if (lib_menu != .none) return;
+    loadCollections();
+    const per = rowsPerPage();
+    for (0..per) |i| {
+        if (!rowRect(i).contains(x, y)) continue;
+        const k = list_page * per + i;
+        if (k >= libraryCount()) return;
+        if (folder_picker) {
+            lib_menu_coll = pickerColl(k) orelse return;
+            lib_menu = .coll;
+        } else {
+            lib_menu_entry = lib_visible[k];
+            lib_menu = .book;
+        }
+        return markFull(WF_REAGL);
+    }
+}
+fn openNameEditor(t: EditTarget, coll: usize, add_entry: ?usize) void {
+    edit_target = t;
+    edit_coll = coll;
+    edit_add_entry = add_entry;
+    note_len = 0;
+    if (t == .coll_rename) {
+        note_len = coll_lens[coll];
+        @memcpy(note_buf[0..note_len], collName(coll));
+    }
+    note_shift = note_len == 0;
+    folder_picker = false;
+    showScreen(.noteedit);
+}
+fn closeNameEditor(save: bool) void {
+    const t = edit_target;
+    edit_target = .note;
+    const name = std.mem.trim(u8, note_buf[0..@min(note_len, 63)], " ");
+    var ok_name = save and name.len > 0;
+    if (ok_name) {
+        for (0..ncoll) |c| if (std.ascii.eqlIgnoreCase(collName(c), name) and !(t == .coll_rename and c == edit_coll)) {
+            ok_name = false;
+        };
+        if (!ok_name) {
+            showScreen(.library);
+            refreshLibraryAfterCollections();
+            return toast("A collection with that name exists", .{});
+        }
+    }
+    showScreen(.library);
+    if (!ok_name) return refreshLibraryAfterCollections();
+    var clean: [64]u8 = undefined;
+    for (name, 0..) |c, i| clean[i] = if (c == '\t' or c < 0x20) ' ' else c;
+    if (t == .coll_new) {
+        if (ncoll >= MAXCOLL) return toast("Too many collections", .{});
+        coll_lens[ncoll] = name.len;
+        @memcpy(coll_names[ncoll][0..name.len], clean[0..name.len]);
+        ncoll += 1;
+        if (edit_add_entry) |ei| if (ei < nlib) setMember(@intCast(ncoll - 1), &lib[ei], true);
+        toast("Collection created", .{});
+        logf("collection created", .{});
+    } else {
+        coll_lens[edit_coll] = name.len;
+        @memcpy(coll_names[edit_coll][0..name.len], clean[0..name.len]);
+        toast("Collection renamed", .{});
+    }
+    refreshLibraryAfterCollections();
+}
+
 fn redraw() bool {
     if (sleep_phase != .awake) {
         drawSleeping();
@@ -4065,8 +4523,9 @@ fn onTap(x: i32, y: i32, t_ev: u64) void {
     const per = rowsPerPage();
     switch (screen) {
         .library => {
+            if (lib_menu != .none) return libMenuTap(x, y);
             if (libraryControl(0).contains(x, y)) {
-                lib_sort = (lib_sort + 1) % 3;
+                lib_sort = (lib_sort + 1) % SORT_NAMES.len;
                 saveUi07();
                 sortLibrary();
                 list_page = 0;
@@ -4086,7 +4545,8 @@ fn onTap(x: i32, y: i32, t_ev: u64) void {
                 const k = list_page * per + i;
                 if (k >= libraryCount()) return;
                 if (folder_picker) {
-                    folder_filter = k;
+                    if (k == newRow()) return openNameEditor(.coll_new, 0, null);
+                    pickerChoose(k);
                     folder_picker = false;
                     filterLibrary();
                     list_page = 0;
@@ -4338,6 +4798,7 @@ fn onLongPress(x: i32, y: i32) void {
             markDirty(selectionScreenRect(), WF_DU);
         },
         .bookmarks => bookmarksLongPress(x, y),
+        .library => libLongPress(x, y),
         .notes => {
             const per = rowsPerPage();
             for (0..per) |i| {

@@ -61,9 +61,20 @@ Everything stays on the Kindle; nothing is sent anywhere and stats are not part 
 
 ## Library and device controls
 
-Recent → Title → Progress cycles sorting. Folder selects relative subfolders; All resets it. Covers are generated lazily only for visible rows; unavailable/complex covers get placeholders. The disk cache is capped at 10 MiB, with 32 thumbnails in RAM. Changed files refresh on a later session, not via a live watcher. Since 0.8.0 cached covers load on a separate worker, new covers show a title/type placeholder immediately, and the next library page is prefetched. The header shows free/total storage and total book size; each row shows type (PDF/EPUB) and file size. A battery bar with percentage sits top-right in the library only (read-only, polled at most every three minutes, no extra refresh). Since 0.9.0 it is never drawn while a book is open, so it cannot cover text.
+Sorting and the Folder/Show filter are described below. Covers are generated lazily only for visible rows; unavailable/complex covers get placeholders. The disk cache is capped at 10 MiB, with 32 thumbnails in RAM. Changed files refresh on a later session, not via a live watcher. Since 0.8.0 cached covers load on a separate worker, new covers show a title/type placeholder immediately, and the next library page is prefetched. The header shows free/total storage and total book size; each row shows type (PDF/EPUB) and file size. A battery bar with percentage sits top-right in the library only (read-only, polled at most every three minutes, no extra refresh). Since 0.9.0 it is never drawn while a book is open, so it cannot cover text.
 
 The Settings button (library and reader menu; called Light / Sleep before 0.9.1) offers separate native 0–24 brightness and warmth controls through `com.lab126.powerd` LIPC. Startup reads values and does not write them; only deliberate adjustments queue a write. No backlight sysfs write is used. Leave experimental power-button sleep OFF until the physical plan in TESTING is completed.
+
+## Sorting (incl. size, 0.9.8)
+
+The Sort button cycles **Recent → Title → Progress → Size: largest first → Size: smallest first**. Size sorting covers all books (PDF and EPUB) and uses the file sizes the library already reads for the storage summary, so loading is not slower. Ties are ordered by title. The sort applies within whatever is shown (All, a folder, Favourites or a collection) and is saved in `ui07.json`, so it survives restarts.
+
+## Collections & favourites (0.9.8)
+
+- **Book menu.** Long-press a book in the library (before 0.9.8 this did nothing): **Favourite** / **Remove from Favourites**, **Add to collection** (choose one, or **+ New collection**), **Remove from collection** (only shown when the book is in one) and **Cancel**. Favourites show a small star before the title.
+- **Show filter.** The Folder button opens **Show**: All books, the folders (in the same rows as before), then Favourites, each collection and **+ New collection**. Picking one filters the library and keeps the current sort; the button shows the active filter.
+- **Manage.** In Show, long-press a collection for **Rename** or **Delete collection**; delete asks once more and only removes the list, never the books. New names and renames use the on-screen keyboard from 0.9.6.
+- **Storage.** `state/collections.tsv` holds collection names and member lines (file size and path). If a member's path disappears, for example after a rename to “Name (3).pdf”, it is re-attached to the single book with the same size and title. When several identical copies exist it prefers the one not in any list yet, and otherwise leaves the entry alone rather than guess.
 
 ## Refresh and dark mode
 
