@@ -73,5 +73,18 @@ case "${1:-status}" in
         echo 'Removed only the empty marker created by this helper. Crash-dump saving may resume.'
     fi
     ;;
- *) echo "Usage: $0 [status|disable-core-dumps|undo-core-dumps|restore-ui]" >&2; exit 2;;
+ clear-cache)
+    # Deletes only the reader's saved page images (instant reopen); books, notes,
+    # reading positions and settings are not touched. Safe while the reader is closed.
+    PAGES=$DATA/cache/pages
+    [ ! -L "$DATA/cache" ] && [ ! -L "$PAGES" ] || fail 'Cache path is a symlink; nothing removed'
+    if [ -d "$PAGES" ]; then
+        n=0
+        for f in "$PAGES"/*.pg "$PAGES"/*.pg.tmp; do [ -f "$f" ] || continue; rm -f "$f"; n=$((n+1)); done
+        echo "Removed $n saved page image(s) from $PAGES"
+    else
+        echo 'No saved page images'
+    fi
+    ;;
+ *) echo "Usage: $0 [status|disable-core-dumps|undo-core-dumps|restore-ui|clear-cache]" >&2; exit 2;;
 esac

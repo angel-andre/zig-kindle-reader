@@ -1,0 +1,3 @@
+HOST (x86_64 box) numbers, not measured on the Kindle (tests/reopen090_bench.py, run before the final log-line-only change):
+scanned PDF (scan-D copy, 47 MB): first frame on reopen, saved page OFF median 193.3 ms [195401, 193288, 192635] us; ON median 4.5 ms [4450, 4539, 4503] us; saved page file 83 KiB
+synthetic EPUB (80 chapters, 1762 pages): first frame on reopen, saved page OFF median 18.5 ms [18224, 18543, 19337] us; ON median 4.8 ms [4843, 4845, 4956] us; saved page file 122 KiB

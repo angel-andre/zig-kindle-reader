@@ -1,0 +1,158 @@
+1/29 zreader.test.screen to PDF coordinates: actual words on pages 7, 17, 19, 39, trim on and off...warning: expected name after CMapName in cmap
+ [page 7, trim=false, 709 exact word hits] warning: ... repeated 2 times...
+warning: expected name after CMapName in cmap
+ [page 7, trim=true, 709 exact word hits] warning: ... repeated 2 times...
+warning: expected name after CMapName in cmap
+ [page 17, trim=false, 449 exact word hits] warning: ... repeated 3 times...
+warning: expected name after CMapName in cmap
+ [page 17, trim=true, 449 exact word hits] warning: ... repeated 3 times...
+warning: expected name after CMapName in cmap
+ [page 19, trim=false, 550 exact word hits] warning: ... repeated 2 times...
+warning: expected name after CMapName in cmap
+ [page 19, trim=true, 550 exact word hits] warning: ... repeated 2 times...
+warning: expected name after CMapName in cmap
+ [page 39, trim=false, 677 exact word hits] warning: ... repeated 2 times...
+warning: expected name after CMapName in cmap
+ [page 39, trim=true, 677 exact word hits] warning: ... repeated 2 times...
+OK
+2/29 zreader.test.exact long press, cross-line drag, both handles and clean release...warning: expected name after CMapName in cmap
+warning: ... repeated 2 times...
+OK
+3/29 zreader.test.legacy notes load, tap edit, change style, copy and delete rewrite both files...warning: expected name after CMapName in cmap
+warning: ... repeated 2 times...
+OK
+4/29 zreader.test.PW6 physical touch endpoints and page-turn configuration...OK
+5/29 zreader.test.colliding source drop cap is in logical reading order, not before headings...warning: expected name after CMapName in cmap
+warning: ... repeated 3 times...
+OK
+6/29 zreader.test.legacy overlapping underline rectangles collapse to one visual baseline...OK
+7/29 zreader.test.adjacent wrapped selection handles choose nearest endpoint, not first hit...warning: expected name after CMapName in cmap
+warning: ... repeated 2 times...
+OK
+8/29 zreader.test.adaptive refresh: heavy cover/images and large transitions only, plain text stays REAGL...OK
+9/29 zreader.test.true clean ioctl is GC16 FULL and never toggles driver inversion...OK
+10/29 zreader.test.sample metrics include darkness and both transitions, excluding framebuffer stride padding...OK
+11/29 zreader.test.image popup dismissal clears full screen; plain text popup stays on normal path...OK
+12/29 zreader.test.PDF width slices have exact 96px overlap, bounded last slice and view-correct coordinates...warning: expected name after CMapName in cmap
+warning: ... repeated 2 times...
+OK
+13/29 zreader.test.PDF zoom factors and pan clamp never change the raster allocation...OK
+14/29 zreader.test.PDF prefetch keys retain current mode and adjacent screen-sized slices...OK
+15/29 zreader.test.portable anchor JSON preserves exact 64-bit checksum and rejects malformed locations...OK
+16/29 zreader.test.EPUB font menu has nine visibly separated 14 to 40 CSS pixel-equivalent steps...OK
+17/29 zreader.test.legacy JSON Unicode escapes decode to UTF-8 including surrogate pairs...OK
+18/29 zreader.test.Define is offered only for one selected word; dictionary gestures cannot turn or pan the book...OK
+19/29 zreader.test.search keyboard is bounded, accepts spaces, and edit cancels an incremental scan...OK
+20/29 zreader.test.Markdown export all escapes book text, keeps locations, rejects corrupt input and rewrites after deletion...OK
+21/29 zreader.test.auto-cropped width remains cropped when zooming even with the independent trim toggle off...OK
+22/29 zreader.test.v07 native light clamp and slider endpoint geometry...OK
+23/29 zreader.test.v07 recent title progress sorts deterministic and progress bounded...OK
+24/29 zreader.test.v07 sleep default stays off and refuses accidental entry...OK
+25/29 zreader.test.v08 storage units and legacy time32 opened repair...OK
+26/29 zreader.test.v08 grey scan paper is not photo ink or periodic cleanup...OK
+27/29 zreader.test.v08 library layout storage and battery screenshot (illustrative values)...OK
+28/29 zreader.test.v081 library book count formatting...OK
+29/29 zreader.test.v081 library bottom line screenshot with book count (illustrative values)...OK
+All 29 tests passed.
+warning: expected name after CMapName in cmap
+warning: ... repeated 3 times...
+warning: expected name after CMapName in cmap
+warning: ... repeated 2 times...
+PASS 54 typography layouts (9 sizes x 3 spacing x 2 margins), exact Unicode quote retained; 54 split-page highlight layouts; state/notes resolve after fresh reopen
+PASS native pointer bookmarks never serialized, repeated legacy quote disambiguated, missing quote/checksum mismatch fail closed
+PASS book -> book (1624 definition bytes)
+PASS reader -> reader (572 definition bytes)
+PASS kindles -> kindle (278 definition bytes)
+PASS foxes -> fox (871 definition bytes)
+PASS studies -> study (1773 definition bytes)
+PASS children -> child (440 definition bytes)
+PASS walked -> walk (1398 definition bytes)
+PASS friend, -> friend (591 definition bytes)
+PASS “Friend,” -> friend (591 definition bytes)
+PASS reader’s -> reader (572 definition bytes)
+PASS café -> cafe (56 definition bytes)
+PASS constitution -> constitution (808 definition bytes)
+PASS 10000 exact/inflected offline lookups: 0.000425 ms/lookup on box; mmap only, no network/write
+PASS 16 malformed/truncated/header/index/reference cases rejected; unterminated gloss bounded safely
+warning: expected name after CMapName in cmap
+warning: ... repeated 2 times...
+PASS case-insensitive PDF phrase + context/geometry, unknown/empty query, bounded matches, fit-width target and 126 EPUB hits before/after reflow
+PASS physical-input stream: cross-line drag, underline, tap-to-edit, style change, copy and delete; JSON/TXT exact
+PASS both physical-input handle adjustments: exact trimmed endpoints
+PASS reversed physical-input selection preserves reading order
+PASS 3 cached page turns, menu, contents and notes; REAGL retained
+PASS EPUB open/reflow, font increase and page turn
+PASS ARM EABI static executable and static host executable
+PASS source-fidelity comparison: drop-cap pixels unchanged (SOURCE LAYOUT STILL DEFECTIVE, NOT FIXED)
+PASS device-resolution screenshots and small PNG previews generated
+PASS real touch: fit-page, auto-cropped fit-width, next/previous slices, double-tap 1.5x/2x, pan and exact per-book restore
+PASS view screenshots/previews and unchanged fixed-size raster buffers
+PASS legacy EPUB note migrated before layout; exact Unicode quote and chapter/scalar anchors retained through two font steps, margin and line-spacing changes
+PASS fresh-context reopen restores identical page raster and exact reading target; relocated annotation remains tappable/editable; precise new-word highlight writes correct portable location
+PASS actual 23px-equivalent / 17.25pt size, compact line spacing and margins persist byte-identically, without accumulated reading-position drift
+PASS EPUB migration/typography/highlights/reopen screenshots at 1272x1696 and previews
+PASS physical single-word long press -> Define; English definition, Next senses, isolated modal swipes, exact page restoration and no notes/page-turn side effects
+PASS absent dictionary shows actionable offline error and closes safely
+PASS dictionary selection/panel/pagination/closed/missing screenshots and small previews
+PASS real big-key query entry, exact two-page results, tap-to-jump preserves fit-width and scrolls to the hit; temporary highlight clears without saving a note
+PASS search keyboard/results/hit/cleared device-resolution screenshots and previews
+PASS every annotation edit/copy/delete rewrites clean Markdown; Export all handles an unopened book and escapes markup without following symlinks; Notes-list deletion removes JSON/TXT/MD text
+PASS Export all action / Notes-list screenshots and previews
+PASS reversible opt-in core marker: create/idempotence/undo, pre-existing/nonempty/replaced/symlink preservation; box sandbox only
+PASS digital-big: every=8, 57/434 full, 13.13/100 pages; {'opening': 1, 'cover': 1, 'text': 377, 'periodic': 53, 'image': 2}
+PASS digital-big: every=off, 4/434 full, 0.92/100 pages; {'opening': 1, 'cover': 1, 'text': 430, 'image': 2}
+PASS digital-small1: every=8, 44/332 full, 13.25/100 pages; {'opening': 1, 'cover': 1, 'text': 288, 'periodic': 41, 'image': 1}
+PASS digital-small1: every=off, 3/332 full, 0.90/100 pages; {'opening': 1, 'cover': 1, 'text': 329, 'image': 1}
+PASS digital-big 1 -> 2 -> 3 -> 4 = GC16 FULL, GC16 FULL, REAGL FULL, REAGL FULL
+PASS actual UI sequence, menu/library return, image-popup dismissal, setting cycle and persisted off
+PASS image-only ordered dithering: clipped footprint only, 16 levels, text bytes unchanged; image_coverage=0.199359 image_count=1
+PASS 30-series device-resolution screenshots and compact previews
+PASS LIPC startup reads/no writes, debounce/clamp, subscription, suspend/wake commands and cleanup
+PASS final deliberate light change flushed even on immediate exit
+PASS failed LIPC write reported, last confirmed level retained
+PASS hung CLI killed and reaped within timeout
+PASS lazy isolated first-page cover, 4536 ink pixels, bounded cache; 101 ms worker (not UI)
+Recovery commands completed: reader stop, UI resume, pillow/statusbar restart, powerd inhibitor clear requested. Verify the screen.
+If still asleep, press power once. Light and dark-mode settings were not changed.
+PASS cache <=10 MiB after eviction; symlink target preserved; real image-heavy PDF cover path
+PASS independent restore-ui sandbox resumes exact pause list, pillow/statusbar, inhibitor; no device touched
+PASS simulated goingToScreenSaver and CLI-error event fails safe, wakes, persists sleep OFF
+PASS 85-book real UI: covers, relative folders/filter, persisted title/progress sorts, progress bars; synthetic 175 MiB PDF cover 0.004s on box
+PASS real touch sliders/buttons 0..24; no startup write; no dark mode path
+PASS opt-in persistence/default OFF, pre-suspend cover completion, sleeping touch ignored, power wake and GC16 restore (SIMULATED, not firmware)
+PASS byte-identical page restored on wake; shots 70-83 plus PNG previews
+PASS miss cover readiness 80 ms
+PASS hit cover readiness 20 ms
+PASS blocked cover readiness 20 ms
+PASS miss cover readiness 81 ms
+PASS miss cover readiness 81 ms
+PASS miss cover readiness 81 ms
+PASS miss cover readiness 80 ms
+PASS miss cover readiness 81 ms
+PASS miss cover readiness 80 ms
+PASS miss cover readiness 81 ms
+PASS cached page: 7 covers ready in 20 ms, no renders
+PASS changed file invalidates disk thumbnail identity
+PASS read-only cached battLevel 76%
+PASS persistent 96x128 grayscale hit, no renderer on hit, changed-size/mtime miss, hits never wait behind slow subprocess
+PASS battery polling issues zero firmware writes
+PASS actual pump: opening + cover exit = 2 GC16; next 14 turns = exactly 14 REAGL, no extra submits, no periodic clean; old default 8 migrated OFF; timestamp positive
+PASS 4400-page synthetic EPUB: first page precedes full pagination; 8 immediate early turns, one update each
+PASS 372-page audit: 353 REAGL, 19 cleans limited to opening, cover departure and photo insert transitions
+PASS storage/type/size + battery preview and scan-D turn-log PNGs written
+PASS cached library: every page change = exactly 1 update (REAGL, no GC16), no per-cover updates; first-ever page after cold start = 1 page update + 1 GL16 thumbnail batch
+PASS uncached rapid page changes: 1 page update + <=2 batched GL16 partial thumbnail-column updates per page; never full-screen per cover
+counts per page change: {'cold': [2, 1, 1, 1], 'cached': [1, 1, 1, 1], 'uncached_fast': [1, 1, 2, 1]}
+PASS library: 15 rapid Next + 15 rapid Prev taps (bottom corners) page normally, never quit; pages seen [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 10, 10, 10, 10, 8, 7, 6, 5, 4, 3, 2, 1]
+PASS reader epub: 60 rapid taps in all four corners and both turn zones -> 60 page turns, never quit
+PASS reader pdf: 60 rapid taps in all four corners and both turn zones -> 60 page turns, never quit
+PASS exit gesture: 3 taps in top-left corner of the library quits (and nothing after it ran)
+PASS reset: corner, corner, Next, corner, corner does not quit
+PASS first open: saved page written at exit (84429 bytes, pixels + key only); reading frames incl. menu have no battery
+PASS reuse: saved page shown first (4521 us host), real page identical so no extra update; total updates on reopen = [('2', 'true')]
+PASS library shows battery; reading view never does
+PASS invalidation on book file change (no preview, single normal opening update)
+PASS invalidation on font change and on image-option change; next open reuses the new page
+PASS queued turns: 2 taps sent while the big EPUB was still opening both applied once it was ready (page 4 -> 6)
+PASS cap: 16 books under a 1 MiB cap keep 12 newest saved pages (oldest evicted, total <= cap)
+EXIT 0

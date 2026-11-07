@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.8.2";
+const VERSION = "0.9.0";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 
 // ---------------- C ----------------
@@ -24,6 +24,13 @@ extern fn zr_page_count_hint(z: *ZrDoc, pages: c_int) void;
 extern fn zr_layout_cache(data: [*:0]const u8) void;
 extern fn zr_no_core() void;
 extern fn zr_battery() c_int;
+extern fn zr_file_mtime(path: [*:0]const u8) i64;
+extern fn zr_pc_init(data: [*:0]const u8, cap: u64) c_int;
+extern fn zr_pc_submit(name: [*:0]const u8, key: u64, fb: [*]const u8, w: c_int, h: c_int, stride: c_int) c_int;
+extern fn zr_pc_flush() void;
+extern fn zr_pc_stop() void;
+extern fn zr_pc_load(name: [*:0]const u8, key: u64, out: [*]u8, w: c_int, h: c_int, stride: c_int) c_int;
+extern fn zr_pc_drop(name: [*:0]const u8) void;
 extern fn zr_file_size(path: [*:0]const u8) u64;
 extern fn zr_storage(path: [*:0]const u8, free: *u64, total: *u64) c_int;
 extern fn zr_thumbs_focus() void;
@@ -481,6 +488,7 @@ const Opts = struct {
     dictionary: ?[*:0]const u8 = null,
     log: ?[*:0]const u8 = null,
     idle_min: u64 = 10,
+    page_cache_mib: u64 = 20,
     sim: ?[*:0]const u8 = null,
     shots: []const u8 = "shots",
     fast: bool = true,
@@ -1204,6 +1212,8 @@ const Book = struct {
     opened_ts: i64 = 0,
     state_dirty: bool = false,
     position: Anchor = .{},
+    fsize: u64 = 0,
+    fmtime: i64 = 0,
     fn pathS(self: *Book) []const u8 {
         return self.path[0..self.path_len];
     }
@@ -1496,8 +1506,118 @@ fn stopWorkers() void {
     book.nthreads = 0;
 }
 
+// ---- v0.9 instant reopen: saved page image per book ----
+// The image is the composed reading page (page raster + annotation overlays), never
+// menus, toasts, selection or the battery. The key covers the book file (size+mtime),
+// screen, image options and every layout field saveState() records, so any change
+// (file, font, margin, spacing, trim, view, page) makes the saved image unusable.
+const PC_EVERY: u32 = 8;
+var pc_preview: []u8 = &.{};
+var pc_preview_active = false;
+var pc_turns: u32 = 0;
+var pc_open_us: u64 = 0;
+var pc_first_frame_pending = false;
+fn pcName(path: []const u8, out: *[32]u8) [*:0]const u8 {
+    const n = std.fmt.bufPrintSentinel(out, "{x:0>16}.pg", .{fnv(path)}, 0) catch return "x";
+    return n.ptr;
+}
+fn pcKey(page: i32, view: u8, step: i32, pan_x: f32, pan_y: f32, base_width: bool, trim: bool, font: f32, margin: f32, spacing: f32, a: Anchor) u64 {
+    var b: [512]u8 = undefined;
+    const k = std.fmt.bufPrint(&b, "zrpg1|{s}|{d}|{d}|{d}x{d}|d{d}|i{d}|p{d}|v{d}|s{d}|x{d:.9}|y{d:.9}|b{d}|t{d}|f{d:.2}|m{d:.1}|l{d:.2}|a{d}:{d}:{d}:{x}", .{
+        book.pathS(), book.fsize, book.fmtime, W, H, @intFromBool(opts.image_dither), @intFromBool(opts.no_images), page, view, step, pan_x, pan_y, @intFromBool(base_width), @intFromBool(trim), font, margin, spacing, a.chapter, a.start, a.end, a.hash,
+    }) catch return 0;
+    return fnv(k);
+}
+fn pcCurrentKey() u64 {
+    const step = if (visibleGeometry()) |g| g.actual_step else @max(pool.step, 0);
+    const a = if (book.reflow) readingAnchor() else Anchor{};
+    return pcKey(pool.cur, @backingInt(pool.view), step, pool.pan_x, pool.pan_y, pool.base_width, pool.trim, pool.font, pool.margin, pool.spacing, a);
+}
+// fb currently holds raster+overlays for pool.cur (called from drawReader before menus).
+fn pcSubmitFb(final: bool) void {
+    if (!book.open or opts.page_cache_mib == 0) return;
+    if (final) zr_pc_flush();
+    var nb: [32]u8 = undefined;
+    const key = pcCurrentKey();
+    if (key == 0) return;
+    if (zr_pc_submit(pcName(book.pathS(), &nb), key, fb.ptr, @intCast(W), @intCast(H), @intCast(STRIDE)) == 0) {
+        pc_turns = 0;
+        if (opts.debug or opts.sim != null) logf("page cache: saved p={d}{s}", .{ pool.cur + 1, if (final) " (final)" else "" });
+    }
+    if (final) zr_pc_flush();
+}
+// Composes the clean reading page into fb (fb is fully redrawn afterwards) and saves it.
+fn pcCaptureNow() void {
+    if (!book.open or opts.page_cache_mib == 0 or sleep_phase != .awake) return;
+    _ = pthread_mutex_lock(&pool.mtx);
+    const i = slotFor(pool.cur) orelse {
+        _ = pthread_mutex_unlock(&pool.mtx);
+        return;
+    };
+    const s = &pool.slots[i];
+    if (s.state != .ready) {
+        _ = pthread_mutex_unlock(&pool.mtx);
+        return;
+    }
+    @memcpy(fb[0 .. STRIDE * H], s.buf[0 .. STRIDE * H]);
+    shown_m = s.m;
+    _ = pthread_mutex_unlock(&pool.mtx);
+    const sel = sel_active;
+    const hit = search_hit;
+    sel_active = false;
+    search_hit = null;
+    drawOverlays();
+    sel_active = sel;
+    search_hit = hit;
+    pcSubmitFb(true);
+}
+// Shows the saved page at once if its key matches the state about to be opened.
+fn pcShowPreview(st: State) void {
+    if (opts.page_cache_mib == 0 or pc_preview.len == 0) return;
+    var nb: [32]u8 = undefined;
+    const name = pcName(book.pathS(), &nb);
+    const key = pcKey(st.page, @backingInt(st.view), st.step, st.pan_x, st.pan_y, st.base_width, st.trim, st.font, st.margin, st.spacing, st.anchor);
+    const t0 = nowUs();
+    const rc = zr_pc_load(name, key, pc_preview.ptr, @intCast(W), @intCast(H), @intCast(STRIDE));
+    if (rc != 0) {
+        if (rc == -5 or rc == -4 or rc == -6) {
+            zr_pc_drop(name);
+            logf("page cache: stale saved page dropped (rc={d})", .{rc});
+        } else if (opts.debug or opts.sim != null) logf("page cache: miss (rc={d})", .{rc});
+        return;
+    }
+    @memcpy(fb[0 .. STRIDE * H], pc_preview[0 .. STRIDE * H]);
+    // Same opening policy as a normal open: the first frame of a book is the single clean.
+    const m = sendUpdate(Rect.full(), WF_GC16, UPDATE_MODE_FULL);
+    t_submit = nowUs();
+    if (!in_flight) {
+        in_flight = true;
+        waitAsync(m);
+    }
+    saveSamples(previous_samples, pc_preview, W, H, STRIDE);
+    previous_metrics = .{};
+    previous_page = st.page;
+    text_since_clean = 0;
+    pc_preview_active = true;
+    pc_first_frame_pending = false;
+    logf("page refresh: p={d} reason=opening wf={d} source=saved-page", .{ st.page + 1, WF_GC16 });
+    logf("page cache: preview shown p={d} load_us={d}", .{ st.page + 1, t_submit - t0 });
+    logf("open profile: first_frame_us={d} (saved page)", .{t_submit - pc_open_us});
+}
+// 4-bit comparison: the panel shows 16 gray levels, so equal high nibbles look identical.
+fn pcSameAsPreview() bool {
+    var y: usize = 0;
+    while (y < H) : (y += 1) {
+        const a = fb[y * STRIDE ..][0..W];
+        const b = pc_preview[y * STRIDE ..][0..W];
+        for (a, b) |p, q| if ((p >> 4) != (q >> 4)) return false;
+    }
+    return true;
+}
+
 fn closeBook() void {
     if (!book.open) return;
+    pcCaptureNow();
     stopWorkers();
     saveState();
     zr_close(book.doc);
@@ -1547,6 +1667,13 @@ fn openBook(path: []const u8) bool {
 
     const st = loadState(path);
     const zpath: [*:0]const u8 = @ptrCast(&book.path);
+    book.fsize = zr_file_size(zpath);
+    book.fmtime = zr_file_mtime(zpath);
+    pc_open_us = request_start;
+    pc_preview_active = false;
+    pc_first_frame_pending = true;
+    pc_turns = 0;
+    pcShowPreview(st);
     const open_start = nowUs();
     const doc = (if (st.typography and st.page == 0 and st.anchor.chapter < 0) zr_open_initial(zpath, LW, LH, st.font, st.margin, st.spacing) else if (st.typography) zr_open_style(zpath, LW, LH, st.font, st.margin, st.spacing) else zr_open(zpath, LW, LH, st.font, st.margin)) orelse {
         logf("cannot open {s}", .{path});
@@ -1855,6 +1982,7 @@ fn pausePrefetch(on: bool) void {
 }
 fn beginSleep(external: bool) void {
     if (!power_sleeps or sleep_phase != .awake) return;
+    pcCaptureNow();
     saveState();
     search_running = false;
     gs.down = false;
@@ -2564,11 +2692,13 @@ fn drawReader() bool {
     _ = pthread_mutex_unlock(&pool.mtx);
     if (!ok) return false;
     drawOverlays();
+    // v0.9: throttled crash-safe snapshot of the clean page (before menus/toasts).
+    if (pc_turns >= PC_EVERY and !sel_active and search_hit == null and visible_page == pool.cur) pcSubmitFb(false);
     if (menu_open) drawMenu();
     if (popup_open) drawPopup();
     if (dictionary_open) drawDefinition();
     drawToast();
-    drawBattery();
+    // v0.9: no battery while a book is open (it covered text); library only.
     return true;
 }
 
@@ -2885,6 +3015,27 @@ fn pump() void {
     if (in_flight) return;
     if (sleep_phase == .awake and screen == .reader and need_page) {
         if (!redraw()) return;
+        if (pc_preview_active) {
+            pc_preview_active = false;
+            first_clean = false;
+            if (previous_page == pool.cur and pcSameAsPreview()) {
+                // The saved image already on screen is what the real page looks like.
+                if (slotFor(pool.cur)) |i| {
+                    previous_metrics = pool.slots[i].metrics;
+                    saveSamples(previous_samples, pool.slots[i].buf, W, H, STRIDE);
+                }
+                need_page = false;
+                dirty = .{};
+                dirty_mode = WF_DU;
+                logf("page cache: real page matches saved image; no update", .{});
+                return;
+            }
+            logf("page cache: real page differs from saved image; normal update", .{});
+        }
+        if (pc_first_frame_pending) {
+            pc_first_frame_pending = false;
+            logf("open profile: first_frame_us={d} (rendered)", .{nowUs() - pc_open_us});
+        }
         const choice = incomingChoice();
         const mode = choice.mode;
         const upd: u32 = if (mode == WF_GL16) UPDATE_MODE_PARTIAL else UPDATE_MODE_FULL;
@@ -2944,6 +3095,7 @@ fn goPage(p: i32, t_ev: u64) void {
     if (!tap_pending_measure or t_ev == 0) t_tap = t_ev;
     tap_pending_measure = t_ev != 0;
     turns += 1;
+    pc_turns += 1;
     book.state_dirty = true;
     sel_active = false;
     popup_open = false;
@@ -3740,6 +3892,7 @@ fn usage() void {
         \\  --books DIR        library root (default /mnt/us/Books)
         \\  --log PATH         log file (default stderr)
         \\  --idle-min N       exit after N minutes without input (default 10, 0 = never)
+        \\  --page-cache-mib N saved-page cache cap for instant reopen (default 20, 0 = off)
         \\  --no-governor      do not raise the CPU governor while rendering
         \\  --sim SCRIPT       host test mode: in-memory screen, scripted input
         \\  --shots DIR        where --sim writes screenshots (PGM)
@@ -3786,6 +3939,9 @@ fn parseArgs(argv: []const [*:0]const u8) bool {
         } else if (eql(a, "--log") and has_next) {
             i += 1;
             opts.log = argv[i];
+        } else if (eql(a, "--page-cache-mib") and has_next) {
+            i += 1;
+            opts.page_cache_mib = std.fmt.parseInt(u64, std.mem.span(argv[i]), 10) catch return false;
         } else if (eql(a, "--idle-min") and has_next) {
             i += 1;
             opts.idle_min = std.fmt.parseInt(u64, std.mem.span(argv[i]), 10) catch return false;
@@ -3867,6 +4023,12 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
 
     loadRefreshSetting();
     init07();
+    {
+        var cb: [1200]u8 = undefined;
+        if (std.fmt.bufPrintSentinel(&cb, "{s}", .{opts.data}, 0)) |dz| {
+            if (zr_pc_init(dz, opts.page_cache_mib << 20) == 0) pc_preview = alloc.alloc(u8, @as(usize, STRIDE) * H) catch &.{};
+        } else |_| {}
+    }
     logf("refresh configuration: every={d}; image_dither={}", .{ opts.full_refresh, opts.image_dither });
     previous_samples = try alloc.alloc(u8, ((@as(usize, W) + SAMPLE_STEP - 1) / SAMPLE_STEP) * ((@as(usize, H) + SAMPLE_STEP - 1) / SAMPLE_STEP));
     defer alloc.free(previous_samples);
@@ -4060,6 +4222,7 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
     zr_device_sleep(0);
     zr_device_stop();
     closeBook();
+    zr_pc_stop();
     zrd_close();
     if (in.touch_fd >= 0 and opts.sim == null) {
         var zero: c_int = 0;

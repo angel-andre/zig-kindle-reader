@@ -31,7 +31,7 @@ Search uses an English keyboard and MuPDF text matching; it scans incrementally 
 
 ## Library and device controls
 
-Recent → Title → Progress cycles sorting. Folder selects relative subfolders; All resets it. Covers are generated lazily only for visible rows; unavailable/complex covers get placeholders. The disk cache is capped at 10 MiB, with 32 thumbnails in RAM. Changed files refresh on a later session, not via a live watcher. Since 0.8.0 cached covers load on a separate worker, new covers show a title/type placeholder immediately, and the next library page is prefetched. The header shows free/total storage and total book size; each row shows type (PDF/EPUB) and file size. A battery bar with percentage sits top-right in library and reader (read-only, polled at most every three minutes, no extra refresh).
+Recent → Title → Progress cycles sorting. Folder selects relative subfolders; All resets it. Covers are generated lazily only for visible rows; unavailable/complex covers get placeholders. The disk cache is capped at 10 MiB, with 32 thumbnails in RAM. Changed files refresh on a later session, not via a live watcher. Since 0.8.0 cached covers load on a separate worker, new covers show a title/type placeholder immediately, and the next library page is prefetched. The header shows free/total storage and total book size; each row shows type (PDF/EPUB) and file size. A battery bar with percentage sits top-right in the library only (read-only, polled at most every three minutes, no extra refresh). Since 0.9.0 it is never drawn while a book is open, so it cannot cover text.
 
 Light / Sleep offers separate native 0–24 brightness and warmth controls through `com.lab126.powerd` LIPC. Startup reads values and does not write them; only deliberate adjustments queue a write. No backlight sysfs write is used. Leave experimental power-button sleep OFF until the physical plan in TESTING is completed.
 
@@ -53,3 +53,15 @@ Normal text uses REAGL. Heavy images, substantial dark/light transitions and men
 | `/mnt/us/zreader.log` and `zreader-stderr.log` | Runtime diagnostics; may contain personal book paths |
 
 Use Export all for books not currently open too. Back up JSON notes and state, not just exports. Different books sharing a basename still share the legacy note/export filename: rename them uniquely before annotating.
+
+## Instant reopen (0.9.0)
+
+When you leave a book (Quit, power button, idle exit, sleep or opening another book) the page you were on is saved as a small grayscale image, and a fresh copy is saved every 8 page turns. Reopening the book shows that page immediately while the document loads; if the real page looks identical, the screen is not updated again. Page turns tapped during loading are applied once the book is ready.
+
+Saved pages live in `/mnt/us/zreader/cache/pages/` (about 80–125 KiB per book, 20 MiB total; the least recently read books are removed first). They contain only page pixels and a check value, and are ignored if the book file or its layout settings change. To delete them all, with the reader closed:
+
+```
+sh /mnt/us/zreader/zreader-maintenance.sh clear-cache
+```
+
+Books, notes, reading positions and settings are not affected.
