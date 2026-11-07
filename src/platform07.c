@@ -20,9 +20,17 @@
 #include <string.h>
 #include <errno.h>
 #include <math.h>
+#include <poll.h>
 extern char **environ;
 static long long millis(void){struct timespec t;clock_gettime(CLOCK_MONOTONIC,&t);return (long long)t.tv_sec*1000+t.tv_nsec/1000000;}
 static void nap(void){struct timespec t={0,20000000};nanosleep(&t,0);}
+/* v0.9.9: the device worker sleeps until a request, a powerd event or its
+ * next deadline (light debounce, 2 s state poll during opt-in sleep, 3 min
+ * battery) instead of waking every 20 ms. uikick() wakes the UI loop. */
+static int devpipe[2]={-1,-1},uiwake=-1;
+void zr_set_ui_wake(int fd){uiwake=fd;}
+static void uikick(void){if(uiwake>=0){char c='w';if(write(uiwake,&c,1)<0){}}}
+static void devkick(void){if(devpipe[1]>=0){char c=1;if(write(devpipe[1],&c,1)<0){}}}
 /* Spawn+bounded reap, even when a firmware CLI hangs. Safe from worker threads. */
 static int command(char *const argv[],char *out,size_t cap,int timeout){
  int pp[2];if(pipe2(pp,O_CLOEXEC|O_NONBLOCK))return -1;
@@ -48,6 +56,7 @@ static int battery=-1;
 int zr_battery(void){pthread_mutex_lock(&dm);int v=battery;pthread_mutex_unlock(&dm);return v;}
 /* bits: going=1,out=2,ready=4,wakeup=8,CLI failure=16,subscription lost=32 */
 static pid_t event_pid;static int event_fd=-1;static pthread_t dev_thread;
+static void devwait(long long lastbattery,long long laststate,int en,int efd);
 static void endevents(void){if(event_pid>0){kill(event_pid,SIGKILL);waitpid(event_pid,0,0);}event_pid=0;if(event_fd>=0)close(event_fd);event_fd=-1;}
 int zr_watch_events(void){prctl(PR_SET_PDEATHSIG,SIGKILL);if(getppid()==1)return 1;execlp("lipc-wait-event","lipc-wait-event","-m","-s","0","com.lab126.powerd","*",(char*)0);return 1;}
 static int startevents(void){int p[2];if(pipe2(p,O_CLOEXEC|O_NONBLOCK))return -1;
@@ -64,23 +73,33 @@ static void *device_worker(void *unused){(void)unused;char b[512];
  if(quit)break;
  if(millis()-lastbattery>=180000){lastbattery=millis();int v=-1;
  if(!getprop("battLevel",1,b,sizeof b)){char *end;long n=strtol(b,&end,10);if(end!=b&&n>=0&&n<=100)v=n;}
- pthread_mutex_lock(&dm);battery=v;pthread_mutex_unlock(&dm);}
+ pthread_mutex_lock(&dm);int changed=battery!=v;battery=v;pthread_mutex_unlock(&dm);if(changed)uikick();}
 
  if(sr==1&&enabled){if(prop("preventScreenSaver",0)||prop("powerButton",1))failed=1;}
  if(sr==3){if(!getprop("state",0,b,sizeof b)&&strstr(b,"active")){pthread_mutex_lock(&dm);event_bits|=2;pthread_mutex_unlock(&dm);}else if(prop("powerButton",1))failed=1;}
  if(sr==2){if(prop("preventScreenSaver",1))failed=1;}
  if(enabled&&event_fd>=0){char in[512];ssize_t n=read(event_fd,in,sizeof in);if(n==0){endevents();failed=1;pthread_mutex_lock(&dm);event_bits|=32;pthread_mutex_unlock(&dm);}
-  for(ssize_t i=0;i<n;i++){if(in[i]=='\n'){line[used]=0;int bit=strstr(line,"goingToScreenSaver")?1:strstr(line,"outOfScreenSaver")?2:strstr(line,"readyToSuspend")?4:strstr(line,"wakeupFromSuspend")?8:0;pthread_mutex_lock(&dm);event_bits|=bit;pthread_mutex_unlock(&dm);used=0;}else if(used<sizeof line-1)line[used++]=in[i];else used=0;}}
+  for(ssize_t i=0;i<n;i++){if(in[i]=='\n'){line[used]=0;int bit=strstr(line,"goingToScreenSaver")?1:strstr(line,"outOfScreenSaver")?2:strstr(line,"readyToSuspend")?4:strstr(line,"wakeupFromSuspend")?8:0;pthread_mutex_lock(&dm);event_bits|=bit;pthread_mutex_unlock(&dm);if(bit)uikick();used=0;}else if(used<sizeof line-1)line[used++]=in[i];else used=0;}}
  /* State polling is only a recovery fallback during a requested sleep. WakeupFromSuspend
   * alone is not a user wake: powerd may wake for housekeeping and return to suspend. */
  if(enabled&&millis()-laststate>2000){laststate=millis();if(!getprop("state",0,b,sizeof b)){int bit=strstr(b,"active")?64:strstr(b,"screenSaver")||strstr(b,"suspended")?128:0;pthread_mutex_lock(&dm);event_bits|=bit;pthread_mutex_unlock(&dm);}}
- if(failed){pthread_mutex_lock(&dm);error_count++;event_bits|=16;pthread_mutex_unlock(&dm);}nap();
+ if(failed){pthread_mutex_lock(&dm);error_count++;event_bits|=16;pthread_mutex_unlock(&dm);uikick();}devwait(lastbattery,laststate,enabled,event_fd);
  }endevents();if(enabled)prop("preventScreenSaver",1);return 0;}
-void zr_device_init(int simulation){if(simulation)return;if(!pthread_create(&dev_thread,0,device_worker,0)){started_dev=1;}}
-void zr_device_light(int which,int v){if(which<0||which>1)return;if(v<0)v=0;if(v>24)v=24;pthread_mutex_lock(&dm);want[which]=v;dirtylight[which]=1;due[which]=millis()+250;pthread_mutex_unlock(&dm);}
+static void devwait(long long lastbattery,long long laststate,int en,int efd){
+ long long now=millis(),t=lastbattery+180000-now;
+ pthread_mutex_lock(&dm);for(int i=0;i<2;i++)if(dirtylight[i]&&due[i]-now<t)t=due[i]-now;int q=stop_dev||enable_req>=0||sleep_req;pthread_mutex_unlock(&dm);
+ if(q)return;
+ if(en&&laststate+2000-now<t)t=laststate+2000-now;
+ if(devpipe[0]<0&&t>20)t=20;
+ if(t<0)t=0;if(t>180000)t=180000;
+ struct pollfd p[2]={{devpipe[0],POLLIN,0},{en?efd:-1,POLLIN,0}};
+ poll(p,2,(int)t);
+ if(devpipe[0]>=0&&(p[0].revents&POLLIN)){char b[64];while(read(devpipe[0],b,sizeof b)>0){}}}
+void zr_device_init(int simulation){if(simulation)return;if(devpipe[0]<0&&pipe2(devpipe,O_CLOEXEC|O_NONBLOCK)){devpipe[0]=devpipe[1]=-1;}if(!pthread_create(&dev_thread,0,device_worker,0)){started_dev=1;}}
+void zr_device_light(int which,int v){if(which<0||which>1)return;if(v<0)v=0;if(v>24)v=24;pthread_mutex_lock(&dm);want[which]=v;dirtylight[which]=1;due[which]=millis()+250;pthread_mutex_unlock(&dm);devkick();}
 int zr_device_poll(int *light,int *warm){pthread_mutex_lock(&dm);*light=dv[0];*warm=dv[1];int bits=event_bits;event_bits=0;pthread_mutex_unlock(&dm);return bits;}
-void zr_device_sleep(int action){pthread_mutex_lock(&dm);if(action==0||action==1)enable_req=action;else sleep_req=action==2?1:action==4?3:2;pthread_mutex_unlock(&dm);}
-void zr_device_stop(void){if(!started_dev)return;/* bounded CLI waits; joins only during final exit, never in the input loop */pthread_mutex_lock(&dm);stop_dev=1;pthread_mutex_unlock(&dm);pthread_join(dev_thread,0);started_dev=0;}
+void zr_device_sleep(int action){pthread_mutex_lock(&dm);if(action==0||action==1)enable_req=action;else sleep_req=action==2?1:action==4?3:2;pthread_mutex_unlock(&dm);devkick();}
+void zr_device_stop(void){if(!started_dev)return;/* bounded CLI waits; joins only during final exit, never in the input loop */pthread_mutex_lock(&dm);stop_dev=1;pthread_mutex_unlock(&dm);devkick();pthread_join(dev_thread,0);started_dev=0;}
 
 #define TW 96
 #define TH 128
@@ -115,14 +134,14 @@ static void *thumb_disk_worker(void *unused){(void)unused;int fd=cachefd();
  for(;;){pthread_mutex_lock(&tm);int k=-1;uint64_t oldest=UINT64_MAX;for(int i=0;i<TN;i++)if(ts[i].status==1&&ts[i].age<oldest){k=i;oldest=ts[i].age;}
  if(k<0){pthread_cond_wait(&tc,&tm);pthread_mutex_unlock(&tm);continue;}ts[k].status=6;char path[1100];strcpy(path,ts[k].path);uint64_t key=ts[k].key;pthread_mutex_unlock(&tm);
  unsigned char pix[TB];char name[64];int ok=thumb_read(fd,key,path,pix,name);
- pthread_mutex_lock(&tm);if(ts[k].key==key){if(ok==1){memcpy(ts[k].pix,pix,TB);ts[k].status=3;revision++;}else ts[k].status=ok<0?4:5;}pthread_cond_broadcast(&tc);pthread_mutex_unlock(&tm);
+ pthread_mutex_lock(&tm);if(ts[k].key==key){if(ok==1){memcpy(ts[k].pix,pix,TB);ts[k].status=3;revision++;uikick();}else ts[k].status=ok<0?4:5;}pthread_cond_broadcast(&tc);pthread_mutex_unlock(&tm);
  }return 0;}
 static void *thumb_worker(void *arg){(void)arg;nice(10);int fd=cachefd();if(fd>=0)prune(fd,0);
  for(;;){pthread_mutex_lock(&tm);int k=-1;uint64_t oldest=UINT64_MAX;for(int i=0;i<TN;i++)if(ts[i].status==5&&ts[i].age<oldest){k=i;oldest=ts[i].age;}
  if(k<0){pthread_cond_wait(&tc,&tm);pthread_mutex_unlock(&tm);continue;}ts[k].status=2;char path[1100];strcpy(path,ts[k].path);uint64_t key=ts[k].key;pthread_mutex_unlock(&tm);
  unsigned char pix[TB];char name[64],tmp[1280];int ok=thumb_read(fd,key,path,pix,name)==1;
  if(!ok&&fd>=0){snprintf(tmp,sizeof tmp,"%s/.thumb-%ld.tmp",cachedir,(long)getpid());unlink(tmp);char *a[]={"/proc/self/exe","--make-thumb",path,tmp,0};if(!command(a,0,0,12000)){int f=open(tmp,O_RDONLY|O_NOFOLLOW|O_CLOEXEC);if(f>=0){if(read(f,pix,TB)==TB)ok=1;close(f);}if(ok){prune(fd,TB);renameat(AT_FDCWD,tmp,fd,name);}}unlink(tmp);}
- pthread_mutex_lock(&tm);if(ts[k].key==key){if(ok)memcpy(ts[k].pix,pix,TB);ts[k].status=ok?3:4;revision++;}pthread_mutex_unlock(&tm);
+ pthread_mutex_lock(&tm);if(ts[k].key==key){if(ok)memcpy(ts[k].pix,pix,TB);ts[k].status=ok?3:4;revision++;uikick();}pthread_mutex_unlock(&tm);
  }return 0;
 }
 void zr_thumbs_init(const char *data){snprintf(cachedir,sizeof cachedir,"%s/thumbs",data);mkdir(cachedir,0700);int fd=cachefd();if(fd<0)return;close(fd);pthread_t t;pthread_attr_t a;pthread_attr_init(&a);pthread_attr_setstacksize(&a,512*1024);if(!pthread_create(&t,&a,thumb_worker,0)){pthread_detach(t);if(!pthread_create(&t,&a,thumb_disk_worker,0)){pthread_detach(t);thumb_started=1;}}pthread_attr_destroy(&a);}

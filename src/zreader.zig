@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.9.8";
+const VERSION = "0.9.9";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 
 // ---------------- C ----------------
@@ -24,6 +24,7 @@ extern fn zr_page_count_hint(z: *ZrDoc, pages: c_int) void;
 extern fn zr_layout_cache(data: [*:0]const u8) void;
 extern fn zr_no_core() void;
 extern fn zr_battery() c_int;
+extern fn zr_set_ui_wake(fd: c_int) void;
 extern fn zr_file_mtime(path: [*:0]const u8) i64;
 extern fn zr_up_start(books: [*:0]const u8, port: c_int, max: u64, free_floor: u64, device: c_int) c_int;
 extern fn zr_up_stop() void;
@@ -505,6 +506,8 @@ const Opts = struct {
     clean_cli: bool = false,
     upload_port: u16 = 8080,
     stats_idle_sec: u32 = 150,
+    sim_battery: c_int = 76,
+    legacy_poll: bool = false,
     upload_min_free_mib: u64 = 6144,
     upload_max_mib: u64 = 500,
     sim: ?[*:0]const u8 = null,
@@ -2239,6 +2242,7 @@ fn wakeReader() void {
     logf("sleep: wake; restore GC16", .{});
 }
 fn tick07() void {
+    if (screen == .library and sleep_phase == .awake and battery_class_drawn != 255 and batteryLevelClass(batteryValue()) != battery_class_drawn) markDirty(lowBatteryRect().grow(20), WF_REAGL);
     const rev = zr_thumb_revision();
     if (rev != thumb_revision) {
         thumb_revision = rev;
@@ -2876,7 +2880,7 @@ fn formatBytes(value: u64, buf: []u8) []const u8 {
 }
 fn drawBattery() void {
     // Cached read-only powerd value. No independent dirty mark or screen update.
-    const value = if (opts.sim != null) @as(c_int, 76) else zr_battery();
+    const value = batteryValue();
     const x: i32 = @as(i32, @intCast(W)) - 205;
     const y: i32 = 4;
     fill(.{ .x = x - 8, .y = y - 4, .w = 205, .h = 38 }, 255);
@@ -2887,6 +2891,32 @@ fn drawBattery() void {
     var b: [16]u8 = undefined;
     const label = if (value >= 0) std.fmt.bufPrint(&b, "{d}%", .{value}) catch "" else "--%";
     text(SANS, 27, @floatFromInt(x + 71), @floatFromInt(y + 28), label, 0x33);
+}
+fn batteryValue() c_int {
+    return if (opts.sim != null) opts.sim_battery else zr_battery();
+}
+// v0.9.9: library-only low-battery notice under the battery (never over book text).
+fn batteryLevelClass(v: c_int) u8 {
+    return if (v < 0) 0 else if (v <= 5) 2 else if (v <= 15) 1 else 0;
+}
+var battery_class_drawn: u8 = 255;
+fn lowBatteryRect() Rect {
+    return .{ .x = 420, .y = 150, .w = @as(i32, @intCast(W)) - 490, .h = 44 };
+}
+fn drawLowBattery() void {
+    const v = batteryValue();
+    const c = batteryLevelClass(v);
+    battery_class_drawn = c;
+    if (c == 0) return;
+    var b: [80]u8 = undefined;
+    const s = std.fmt.bufPrint(&b, "{s} ({d}%) · charge soon", .{ if (c == 2) "Battery very low" else "Battery low", v }) catch "";
+    const r = lowBatteryRect();
+    const w = textW(SANS, 28, s);
+    const x = @as(f32, @floatFromInt(r.x + r.w)) - w;
+    if (c == 2) {
+        fill(.{ .x = @as(i32, @intFromFloat(x)) - 14, .y = r.y, .w = @as(i32, @intFromFloat(w)) + 28, .h = r.h }, 0x00);
+        text(SANS, 28, x, @floatFromInt(r.y + 32), s, 0xFF);
+    } else text(SANS, 28, x, @floatFromInt(r.y + 32), s, 0x00);
 }
 fn drawReader() bool {
     _ = pthread_mutex_lock(&pool.mtx);
@@ -3132,6 +3162,7 @@ var last_cover_folder: usize = std.math.maxInt(usize);
 fn drawLibrary() void {
     header(if (folder_picker) "Show" else "Library", book.open);
     drawBattery();
+    drawLowBattery();
     libFocus();
     button(libraryControl(0), SORT_NAMES[lib_sort], false);
     var label: [1100]u8 = undefined;
@@ -3732,13 +3763,19 @@ fn statsActive(now: u64) bool {
     return book.open and stats_cur != null and screen == .reader and !menu_open and sleep_phase == .awake and
         now -| stats_last_activity < @as(u64, opts.stats_idle_sec) * 1_000_000;
 }
+var stats_state_active = false;
 fn statsTick(last_input: u64) void {
     _ = last_input;
     const now = nowUs();
-    const dt = @min(now -| stats_prev_tick, 2_000_000);
+    const prev = stats_prev_tick;
     stats_prev_tick = now;
-    if (statsActive(now)) {
-        stats_frac_us += dt;
+    // v0.9.9: the loop may sleep for long stretches, so count the part of
+    // [prev, now] before the activity window closed, using the state at prev.
+    const was_active = stats_state_active;
+    stats_state_active = book.open and stats_cur != null and screen == .reader and !menu_open and sleep_phase == .awake;
+    const end = @min(now, stats_last_activity + @as(u64, opts.stats_idle_sec) * 1_000_000);
+    if (was_active and stats_cur != null and end > prev) {
+        stats_frac_us += end - prev;
         if (stats_frac_us >= 1_000_000) {
             const secs: u32 = @intCast(stats_frac_us / 1_000_000);
             stats_frac_us -= @as(u64, secs) * 1_000_000;
@@ -4336,6 +4373,25 @@ fn closeNameEditor(save: bool) void {
         toast("Collection renamed", .{});
     }
     refreshLibraryAfterCollections();
+}
+
+// v0.9.9: the main loop sleeps until the next real deadline instead of
+// waking ten times a second. Workers, covers and powerd events wake it
+// through the existing render pipe; input wakes it through its own fds.
+fn idleTimeoutMs(last_input: u64, last_save: u64) i32 {
+    if (opts.legacy_poll) return 100;
+    if (sleep_phase != .awake and sleep_phase != .asleep) return 100;
+    if (in_flight or need_page or !dirty.empty() or pending_shot != null or slider_active or light_drag != null or gs.down) return 100;
+    if (screen == .library and lib_hold) return 15;
+    const now = nowUs();
+    var until: u64 = 60_000_000;
+    if (toast_len > 0) until = @min(until, toast_until -| now);
+    if (search_hit != null and search_hit_until > 0) until = @min(until, search_hit_until -| now);
+    if (opts.idle_min > 0) until = @min(until, (last_input + opts.idle_min * 60 * 1_000_000) -| now);
+    if (book.state_dirty) until = @min(until, (@max(last_save + 2_000_000, last_input + 1_500_000) -| now) + 10_000);
+    if (stats_dirty) until = @min(until, (stats_last_save + 60_000_000) -| now);
+    if (stats_state_active) until = @min(until, (stats_last_activity + @as(u64, opts.stats_idle_sec) * 1_000_000) -| now);
+    return @intCast(std.math.clamp(until / 1000 + 1, 1, 60_000));
 }
 
 fn redraw() bool {
@@ -5330,6 +5386,11 @@ fn parseArgs(argv: []const [*:0]const u8) bool {
         } else if (eql(a, "--log") and has_next) {
             i += 1;
             opts.log = argv[i];
+        } else if (eql(a, "--sim-battery") and has_next) {
+            i += 1;
+            opts.sim_battery = std.fmt.parseInt(c_int, std.mem.span(argv[i]), 10) catch return false;
+        } else if (eql(a, "--legacy-poll")) {
+            opts.legacy_poll = true;
         } else if (eql(a, "--stats-idle-sec") and has_next) {
             i += 1;
             opts.stats_idle_sec = std.fmt.parseInt(u32, std.mem.span(argv[i]), 10) catch return false;
@@ -5444,6 +5505,7 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
     var dp: [2]i32 = undefined;
     if (bad(linux.pipe2(&rp, .{ .NONBLOCK = true, .CLOEXEC = true })) or bad(linux.pipe2(&dp, .{ .NONBLOCK = true, .CLOEXEC = true }))) return 1;
     pool.pipe_w = rp[1];
+    zr_set_ui_wake(rp[1]);
     waiter.pipe_w = dp[1];
     var wth: c_ulong = 0;
     _ = spawn(&wth, waiterThread);
@@ -5517,7 +5579,7 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
                 pending_shot = null;
             }
         }
-        var timeout: i32 = if (search_running and sleep_phase == .awake) 0 else 100;
+        var timeout: i32 = if (search_running and sleep_phase == .awake) 0 else idleTimeoutMs(last_input, last_save);
         if (search_hit != null) timeout = @min(timeout, 100);
         if (gs.down and !gs.long_fired) timeout = 40;
         if (center_pending) timeout = @min(timeout, 20);

@@ -76,6 +76,10 @@ The Sort button cycles **Recent → Title → Progress → Size: largest first �
 - **Manage.** In Show, long-press a collection for **Rename** or **Delete collection**; delete asks once more and only removes the list, never the books. New names and renames use the on-screen keyboard from 0.9.6.
 - **Storage.** `state/collections.tsv` holds collection names and member lines (file size and path). If a member's path disappears, for example after a rename to “Name (3).pdf”, it is re-attached to the single book with the same size and title. When several identical copies exist it prefers the one not in any list yet, and otherwise leaves the entry alone rather than guess.
 
+## Battery (0.9.9)
+
+The reader now sleeps between your taps instead of checking for work ten times a second, and its device helper no longer wakes every 20 ms, so idle reading uses less power. Nothing about page turns or the screen changes. In the library, a notice appears under the battery: “Battery low (N%) · charge soon” at 15% or less, and a white-on-black “Battery very low” at 5% or less. It is never drawn over a book page. The reader does not switch Wi-Fi on or off (it is used only while the Upload screen is open); use Airplane mode for the longest standby.
+
 ## Refresh and dark mode
 
 Normal text uses REAGL. Heavy images, substantial dark/light transitions and menu/library context changes request GC16 FULL. The reader-menu Full refresh button (Off/4/8/16; called “Cleanup” before 0.9.3) controls periodic full refreshes of text pages. It is Off by default and was reset to Off once in 0.8.0 and again in 0.9.3. Scanned pages with grey paper tone use REAGL; only real photos, covers and context changes get GC16; Off does not disable heavy/context safety cleans. Hardware dark mode is inherited, never toggled by the reader. Host previews do not simulate it.

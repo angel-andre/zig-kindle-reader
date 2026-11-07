@@ -2,6 +2,10 @@
 
 Earlier versions were early prototypes and are not listed.
 
+## 0.9.9
+
+Battery saving and a low-battery warning: the reader no longer wakes on a timer while you read or sit in the library. The input loop sleeps until a touch, the power button, a finished page or cover, or its next real deadline; the device helper thread, which used to wake every 20 ms (about 50 times a second), now waits for a request, a powerd event or its 3-minute battery read. Host measurements: idle wakeups about 10/s → 0/s in the reader and library, and about 50/s → 0.1/s in the device thread. Page turns, pixels, the refresh policy and the exit gesture are unchanged; the frontlight and Wi-Fi radio are not touched. In the library only, a notice under the battery reads “Battery low (N%) · charge soon” at 15% or less and “Battery very low” (white on black) at 5% or less; it is drawn with the normal library update and never over book pages.
+
 ## 0.9.8
 
 Collections, favourites and size sort: long-press a book in the library for Favourite, Add to collection, Remove from collection or Cancel; favourites get a small star. The Folder button now opens “Show”: All books, the folders, Favourites, each collection and “+ New collection” (the current sort is kept). Long-press a collection there to rename or delete it; deleting never removes books. Names use the on-screen keyboard. The Sort button adds “Size: largest first” and “Size: smallest first”, using the file sizes the library already reads; the chosen sort is kept across restarts. Collections are stored in `state/collections.tsv`; a book renamed with an upload “(N)” suffix stays in its lists. Includes 0.9.7 reading stats.
