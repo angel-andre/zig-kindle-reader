@@ -22,7 +22,11 @@ static OPJ_SIZE_T rd(void *b, OPJ_SIZE_T n, void *u){ jsb *s=u; size_t l=s->size
 static OPJ_OFF_T sk(OPJ_OFF_T n, void *u){ jsb *s=u; if(n>(OPJ_OFF_T)(s->size-s->pos)) n=s->size-s->pos; s->pos+=n; return s->pos; }
 static OPJ_BOOL se(OPJ_OFF_T p, void *u){ jsb *s=u; if(p>(OPJ_OFF_T)s->size) return OPJ_FALSE; s->pos=p; return OPJ_TRUE; }
 static void quiet(const char *m, void *u){ (void)m; (void)u; }
+unsigned char *zr_jpx_small_lum2(fz_context *ctx, const unsigned char *data, size_t size, int tw, int th, int *ow, int *oh);
 unsigned char *zr_jpx_small_lum(fz_context *ctx, const unsigned char *data, size_t size, int target, int *ow, int *oh)
+{ return zr_jpx_small_lum2(ctx,data,size,target,target,ow,oh); }
+/* Largest reduction keeping at least tw x th pixels. */
+unsigned char *zr_jpx_small_lum2(fz_context *ctx, const unsigned char *data, size_t size, int tw, int th, int *ow, int *oh)
 {
     if (size < 2) return NULL;
     unsigned char *out=NULL;
@@ -36,7 +40,7 @@ unsigned char *zr_jpx_small_lum(fz_context *ctx, const unsigned char *data, size
     opj_stream_set_user_data(st,&sb,NULL); opj_stream_set_user_data_length(st,size);
     if (opj_setup_decoder(codec,&par) && opj_read_header(st,codec,&im) && im && im->numcomps >= 1) {
         int w=im->x1-im->x0, h=im->y1-im->y0, k=0;
-        while (k < 6 && (w>>(k+1)) >= target && (h>>(k+1)) >= target) k++;
+        while (k < 6 && (w>>(k+1)) >= tw && (h>>(k+1)) >= th) k++;
         int ok=1;
         if (k && !opj_set_decoded_resolution_factor(codec,k)) { k=0; }
         if (!opj_decode(codec,st,im) || !opj_end_decompress(codec,st)) ok=0;

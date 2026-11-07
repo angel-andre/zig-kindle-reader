@@ -570,6 +570,7 @@ static int lum_at(const fz_pixmap *p, int x, int y)
 /* Reduced-resolution luminance preview (caller frees). JPEG 2000 goes through
  * OpenJPEG's resolution factor; other formats through MuPDF's subsampling. */
 unsigned char *zr_jpx_small_lum(fz_context *ctx, const unsigned char *data, size_t size, int target, int *ow, int *oh);
+unsigned char *zr_jpx_small_lum2(fz_context *ctx, const unsigned char *data, size_t size, int tw, int th, int *ow, int *oh);
 static unsigned char *small_lum(fz_context *ctx, fz_image *img, int target, int *ow, int *oh)
 {
     fz_compressed_buffer *cb=fz_compressed_image_buffer(ctx,img);
@@ -677,6 +678,60 @@ static int mrc_fast(fz_context *ctx, fz_display_list *l, fz_matrix m, fz_device 
     return done;
 }
 
+/* ---- v0.9.4: single full-page JPEG 2000 scans ----
+ * A page that is exactly one opaque full-page JPEG 2000 image (no mask, nothing
+ * else visible) whose resolution is at least twice the screen footprint is
+ * decoded at a reduced resolution that still covers the footprint (OpenJPEG
+ * resolution factor), instead of MuPDF's full-size decode followed by
+ * downscaling. Only with "Clean up scanned pages" on, and only when the reduced
+ * image is paper-dominant (the same test the cleanup uses), so covers, photos
+ * and digital pages are never affected. The reduced image then goes through the
+ * normal scan cleanup. */
+static int jpx_single(fz_context *ctx, fz_display_list *l, fz_matrix m, zr_image_device *images, int w, int h)
+{
+    mrc_dev *d=NULL; unsigned char *lum=NULL; fz_pixmap *pix=NULL; fz_image *im=NULL; int done=0, bw=0, bh=0;
+    fz_var(d); fz_var(lum); fz_var(pix); fz_var(im);
+    fz_try(ctx) {
+        d=fz_new_derived_device(ctx,mrc_dev);
+        d->super.fill_path=mrc_fill_path; d->super.stroke_path=mrc_stroke_path;
+        d->super.fill_text=mrc_fill_text; d->super.stroke_text=mrc_stroke_text;
+        d->super.fill_shade=mrc_fill_shade; d->super.fill_image=mrc_fill_image;
+        d->super.fill_image_mask=mrc_fill_image_mask; d->super.clip_image_mask=mrc_clip_image_mask;
+        d->super.begin_mask=mrc_begin_mask; d->super.begin_group=mrc_begin_group; d->super.begin_tile=mrc_begin_tile;
+        fz_run_display_list(ctx,l,&d->super,m,fz_make_rect(0,0,w,h),NULL);
+        fz_close_device(ctx,&d->super);
+        fz_image *b = d->n==1 ? d->img[0] : NULL;
+        fz_compressed_buffer *cb = b ? fz_compressed_image_buffer(ctx,b) : NULL;
+        if (!d->other && !d->clip && b && !b->mask && !b->imagemask && d->a[0] == 1 && cb && cb->buffer &&
+            cb->params.type == FZ_IMAGE_JPX && covers(d->m[0],w,h,images->page_area)) {
+            fz_rect r=fz_intersect_rect(fz_transform_rect(fz_unit_rect,d->m[0]),fz_make_rect(0,0,w,h));
+            int tw=(int)ceilf(r.x1-r.x0), th=(int)ceilf(r.y1-r.y0);
+            if (tw > 0 && th > 0 && b->w >= 2*tw && b->h >= 2*th) {
+                lum=zr_jpx_small_lum2(ctx,cb->buffer->data,cb->buffer->len,tw,th,&bw,&bh);
+                if (lum && bw < b->w) {
+                    int hist[256]={0}, n=bw*bh;
+                    for (int i=0;i<n;i++) hist[lum[i]]++;
+                    int mode=0; for (int v=1;v<256;v++) if (hist[v]>hist[mode]) mode=v;
+                    int near=0; for (int v=mode-14; v<=mode+14; v++) if (v>=0&&v<256) near+=hist[v];
+                    if (mode >= 96 && near*100 >= n*35) {
+                        pix=fz_new_pixmap(ctx,fz_device_gray(ctx),bw,bh,NULL,0);
+                        for (int y=0;y<bh;y++) memcpy(pix->samples+(size_t)y*pix->stride,lum+(size_t)y*bw,bw);
+                        im=fz_new_image_from_pixmap(ctx,pix,NULL);
+                        images->super.fill_image(ctx,&images->super,im,d->m[0],1,fz_default_color_params);
+                        done=1;
+                    }
+                }
+            }
+        }
+    }
+    fz_always(ctx) {
+        if (d) { for (int i=0;i<d->n;i++) fz_drop_image(ctx,d->img[i]); fz_drop_image(ctx,d->clip); fz_drop_device(ctx,&d->super); }
+        free(lum); fz_drop_image(ctx,im); fz_drop_pixmap(ctx,pix);
+    }
+    fz_catch(ctx) { fz_report_error(ctx); done=0; }
+    return done;
+}
+
 int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *out, int w, int h, int stride,
     int no_images, int image_dither, zr_render_stats *stats)
 {
@@ -714,7 +769,7 @@ int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *ou
         fz_device *draw = images ? &images->super : dev;
         if (images && images->clean && mrc_fast(ctx,l,m,dev,out,stride,w,h,images->page_area,NULL)) {
             images->cleaned=1; images->image_count=2; mrc=1; /* drawn as text ink: no image area */
-        } else
+        } else if (!(images && images->clean && jpx_single(ctx,l,m,images,w,h)))
         fz_run_display_list(ctx, l, draw, m, fz_make_rect(0, 0, w, h), &z->cookie);
         if (images && !mrc) { finish_page(images); rerender = images->rerender; }
         fz_close_device(ctx, draw);

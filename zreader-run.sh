@@ -2,6 +2,9 @@
 # Standalone launcher: Amazon UI paused the way koreader.sh does it, SSH kept reachable.
 # Usage: zreader-run.sh [zreader options] [book | @library | @last | @epub]
 ulimit -c 0 2>/dev/null || :
+# v0.9.4 launch profile: uptime readings for the reader's "launch profile" log line.
+ZR_LAUNCH_T0=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)
+export ZR_LAUNCH_T0
 DIR=/mnt/us/zreader
 LOG=/mnt/us/zreader.log
 ERR=/mnt/us/zreader-stderr.log
@@ -64,6 +67,9 @@ if ps w 2>/dev/null | grep -q '[r]eader.lua'; then
 fi
 
 # SSH: KOReader's dropbear, as its SSH plugin starts it, key-only (-s).
+# v0.9.4: runs in the background, overlapping the UI pause (dropbear daemonizes
+# itself; the reader never waits for it).
+start_ssh() {
 if ! netstat -ltn 2>/dev/null | grep -q ":$PORT "; then
 	if [ -x "$KO/dropbear" ]; then
 		iptables -C INPUT -p tcp --dport $PORT -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT 2>/dev/null ||
@@ -75,15 +81,25 @@ if ! netstat -ltn 2>/dev/null | grep -q ":$PORT "; then
 			log "dropbear started on $PORT (key-only)" || log "dropbear failed to start"
 	fi
 fi
+}
+start_ssh </dev/null &
+
 
 # Pause the Amazon UI (koreader.sh style): keep X alive but stopped, pillow off.
-cat /dev/fb0 >"$FB" 2>/dev/null
+# v0.9.4: the screen snapshot runs alongside the LIPC calls, and the 0.3 s
+# settle delay after disabling pillow now overlaps the statusbar stop instead
+# of following it. Same steps, same order of effects before X is stopped.
+cat /dev/fb0 >"$FB" 2>/dev/null &
+FB_PID=$!
 lipc com.lab126.powerd preventScreenSaver 1
 lipc com.lab126.pillow disableEnablePillow disable
+( usleep 300000 2>/dev/null || sleep 1 ) &
+SETTLE_PID=$!
 if status statusbar 2>/dev/null | grep -q "start/running"; then
 	stop statusbar >/dev/null 2>&1 && STOPPED_SB=1
 fi
-usleep 300000 2>/dev/null || sleep 1
+wait "$SETTLE_PID" 2>/dev/null
+wait "$FB_PID" 2>/dev/null
 for p in awesome volumd blanket Xorg; do
 	killall -STOP "$p" >/dev/null 2>&1 && PAUSED="$PAUSED $p"
 done
@@ -92,6 +108,8 @@ log "paused:$PAUSED"
 OLD_GOV=$(cat "$GOV" 2>/dev/null)
 
 log "running zreader$OPTS '$BOOK'"
+ZR_LAUNCH_EXEC=$(cut -d' ' -f1 /proc/uptime 2>/dev/null)
+export ZR_LAUNCH_EXEC
 # shellcheck disable=SC2086
 if [ -n "$BOOK" ]; then
 	"$DIR/zreader" --data "$DIR" --books /mnt/us/Books --log "$LOG" $OPTS "$BOOK" >/dev/null 2>>"$ERR"

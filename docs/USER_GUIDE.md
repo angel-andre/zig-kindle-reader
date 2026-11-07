@@ -8,6 +8,7 @@
 - While reading: tap the centre to open the menu, then Quit.
 - Power button: quit by default. Idle timeout defaults to 10 minutes and exits rather than entering reader-managed sleep.
 - Contents opens a document's table of contents. The menu also offers progress, go-to and return to start.
+- Since 0.9.4 the in-book menu has no Up/Down buttons (tap or swipe the page instead). For PDFs, the second row holds the view mode and Reset pan, with free space for future buttons.
 
 ## PDFs and EPUBs
 

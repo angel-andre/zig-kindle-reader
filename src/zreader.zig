@@ -570,7 +570,35 @@ fn makeUpdate(r0: Rect, mode: u32, upd: u32) UpdateDataMtk {
     u.hist_gray_waveform_mode = if (mode == WF_REAGL) WF_REAGL else WF_GC16;
     return u;
 }
+// ---- v0.9.4 launch profile: zreader-run.sh passes /proc/uptime readings
+// (same clock as CLOCK_MONOTONIC while awake) so one log line shows where
+// launch time goes, from the script start to the first screen update.
+var lp_main: u64 = 0;
+var lp_fb: u64 = 0;
+var lp_fonts: u64 = 0;
+var lp_setup: u64 = 0;
+var lp_library: u64 = 0;
+var lp_done = false;
+fn envUptimeUs(name: [*:0]const u8) u64 {
+    const v = std.c.getenv(name) orelse return 0;
+    const f = std.fmt.parseFloat(f64, std.mem.span(v)) catch return 0;
+    return if (f > 0) @intFromFloat(f * 1e6) else 0;
+}
+fn msBetween(a: u64, b: u64) f64 {
+    return if (a == 0 or b < a) -1 else @as(f64, @floatFromInt(b - a)) / 1000.0;
+}
+fn logLaunchProfile() void {
+    if (lp_done) return;
+    lp_done = true;
+    const now = nowUs();
+    const t0 = envUptimeUs("ZR_LAUNCH_T0");
+    const t1 = envUptimeUs("ZR_LAUNCH_EXEC");
+    logf("launch profile: script_start..exec={d:.0}ms exec..main={d:.0}ms main..fb={d:.0}ms fb..fonts={d:.0}ms fonts..setup={d:.0}ms setup..library={d:.0}ms library..first_frame={d:.0}ms main..first_frame={d:.0}ms script_start..first_frame={d:.0}ms", .{
+        msBetween(t0, t1), msBetween(t1, lp_main), msBetween(lp_main, lp_fb), msBetween(lp_fb, lp_fonts), msBetween(lp_fonts, lp_setup), msBetween(lp_setup, lp_library), msBetween(lp_library, now), msBetween(lp_main, now), msBetween(t0, now),
+    });
+}
 fn sendUpdate(r0: Rect, mode: u32, upd: u32) u32 {
+    if (!lp_done and lp_library != 0) logLaunchProfile();
     marker +%= 1;
     if (marker == 0) marker = 1;
     if (opts.sim != null or opts.debug) logf("refresh submit: wf={d} full={} {d}x{d}", .{ mode, mode == WF_GC16 or upd == UPDATE_MODE_FULL, r0.w, r0.h });
@@ -1190,6 +1218,7 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
         }
         pool.busy -= 1;
         pool.render_us.add(dt);
+        noteSlowPage(dt);
         _ = pthread_cond_broadcast(&pool.cond);
         _ = linux.write(pool.pipe_w, "r", 1);
     }
@@ -1665,9 +1694,33 @@ fn renderFirstRaster(doc: *ZrDoc) void {
     if (pool.trim and rendered) pool.trims[@intCast(pool.cur)] = .{ .done = true, .r = r };
 }
 
+// v0.9.4 slow-pages check: one log line per opened book once its first 8
+// page renders average more than SLOW_PAGE_US, so slow books show up in the log.
+const SLOW_PAGE_US: u64 = 700_000;
+var slow_sum: u64 = 0;
+var slow_max: u64 = 0;
+var slow_n: u32 = 0;
+var slow_logged = false;
+fn noteSlowPage(dt: u64) void { // called with pool.mtx held
+    slow_sum += dt;
+    slow_n += 1;
+    slow_max = @max(slow_max, dt);
+    if (!slow_logged and slow_n >= 8) {
+        slow_logged = true;
+        const avg = slow_sum / slow_n;
+        if (avg > SLOW_PAGE_US or opts.sim != null)
+            logf("slow pages: {s} avg={d}ms max={d}ms over {d} renders, clean_scans={} book='{s}'", .{ if (avg > SLOW_PAGE_US) "SLOW" else "ok", avg / 1000, slow_max / 1000, slow_n, opts.clean_scans, book.pathS() });
+    }
+}
 fn openBook(path: []const u8) bool {
     const request_start = nowUs();
     closeBook();
+    _ = pthread_mutex_lock(&pool.mtx);
+    slow_sum = 0;
+    slow_max = 0;
+    slow_n = 0;
+    slow_logged = false;
+    _ = pthread_mutex_unlock(&pool.mtx);
     logf("open profile: close_previous_us={d}", .{nowUs() - request_start});
     first_clean = true;
     previous_page = -1;
@@ -2684,9 +2737,9 @@ fn drawMenu() void {
     if (book.is_pdf) button(panelButton(0, 3), if (pool.trim) "Trim: on" else "Trim: off", pool.trim) else button(panelButton(0, 3), "Go to start", false);
     if (book.is_pdf) {
         button(panelButton(1, 0), VIEW_NAMES[@backingInt(pool.view)], false);
-        button(panelButton(1, 1), "Up", false);
-        button(panelButton(1, 2), "Down", false);
-        button(panelButton(1, 3), "Reset pan", false);
+        // 0.9.4: "Up"/"Down" removed (page taps and swipes do the same); row 1
+        // columns 2-3 are free for future buttons.
+        button(panelButton(1, 1), "Reset pan", false);
     }
     button(panelButton(2, 0), "Search", false);
     button(panelButton(2, 1), "Export all", false);
@@ -3387,18 +3440,6 @@ fn onReaderTap(x: i32, y: i32, t_ev: u64) void {
                 return;
             }
             if (panelButton(1, 1).contains(x, y)) {
-                menu_open = false;
-                first_clean = true;
-                need_page = true;
-                return turnView(-1, t_ev);
-            }
-            if (panelButton(1, 2).contains(x, y)) {
-                menu_open = false;
-                first_clean = true;
-                need_page = true;
-                return turnView(1, t_ev);
-            }
-            if (panelButton(1, 3).contains(x, y)) {
                 return setView(pool.view, null);
             }
         }
@@ -4070,6 +4111,7 @@ fn parseArgs(argv: []const [*:0]const u8) bool {
 }
 
 pub fn main(init: std.process.Init.Minimal) !u8 {
+    lp_main = nowUs();
     zr_no_core();
     const argv: []const [*:0]const u8 = @ptrCast(init.args.vector);
     if (argv.len == 2 and eql(std.mem.span(argv[1]), "--powerd-events")) return @intCast(zr_watch_events());
@@ -4121,12 +4163,14 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
     LW = @as(f32, @floatFromInt(W)) * 72.0 / 300.0;
     LH = @as(f32, @floatFromInt(H)) * 72.0 / 300.0;
     logf("screen {d}x{d} stride {d}", .{ W, H, STRIDE });
+    lp_fb = nowUs();
 
     ui = zr_ui_new(sans_font.ptr, sans_font.len) orelse {
         logf("cannot load UI fonts", .{});
         return 1;
     };
 
+    lp_fonts = nowUs();
     var dirs: [1200]u8 = undefined;
     mkdirP(std.fmt.bufPrint(&dirs, "{s}/state", .{opts.data}) catch "");
     mkdirP(std.fmt.bufPrint(&dirs, "{s}/notes", .{opts.data}) catch "");
@@ -4175,7 +4219,9 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
         saveUi07();
     }
 
+    lp_setup = nowUs();
     scanLibrary();
+    lp_library = nowUs();
     if (opts.book) |b| {
         if (openBook(std.mem.span(b))) {
             screen = .reader;
