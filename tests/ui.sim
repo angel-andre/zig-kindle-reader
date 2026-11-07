@@ -1,0 +1,28 @@
+wait 1200
+down 288 548
+wait 750
+move 1176 548
+wait 200
+move 300 585
+wait 200
+shot 22_select_drag
+up 300 585
+wait 300
+shot 23_select_handles
+popup 0
+wait 300
+tap 700 548
+wait 300
+shot 24_annot_popup
+popup 1
+wait 300
+tap 700 548
+wait 200
+popup 2
+wait 300
+tap 700 548
+wait 200
+popup 0
+wait 300
+shot 25_after_delete
+quit

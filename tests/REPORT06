@@ -1,0 +1,123 @@
+zreader 0.6.0 / priority features 1-5 / BOX-TESTED, NOT DEPLOYED
+
+Completed, in the requested priority order
+1. Per-book PDF fit-page, auto-cropped fit-width / 96px-overlap screen slices,
+   1.5x/2x double-tap zoom, bounded one-finger pan on release, current-view
+   worker prefetch and persistent mode/slice/pan/base state. Cropped width is
+   retained in zoom even with the independent Trim toggle off. No pinch.
+2. EPUB chapter/Unicode-scalar anchors + chapter checksum for persistent reading
+   targets and notes. No opaque pointer bookmarks on disk. Migrate legacy notes
+   in their OLD CSS/layout before new typography; use quote + old quad to choose
+   the exact repeated occurrence. Resolve highlights into current layout quads,
+   including across multiple newly laid-out pages. Nine 14-40 CSS-px equivalent
+   font sizes, 3 line-height settings and adjustable margins. Exact quarter-point
+   font persistence and stable within-page target prevent cumulative drift.
+   Fixed legacy JSON \u decoding, including surrogate pairs and UTF-8 validation.
+   Unresolved notes remain visible in Notes/exports, but never mark random text.
+3. Offline English WordNet dictionary. Long-press one word, Define; paginated
+   full senses panel, simple inflection/possessive/irregular/accent fallbacks.
+   Sorted keys/shared offsets, bounds-checked read-only mmap, no network/runtime
+   dependencies. Missing/corrupt dictionary gives a safe actionable panel.
+4. Menu Search, big-key English keyboard, native MuPDF case-insensitive matching,
+   snippets/page numbers, incremental/cancellable per-page scan. Up to 200 hits;
+   tap preserves view and scrolls/pans to target; temporary 1.6s hit mark clears
+   without creating an annotation. No OCR / cross-page-phrase matching.
+5. Markdown rewritten on every note mutation at DATA/export/<book>.md, including
+   deletes and copies. Export all handles unopened books, escapes markup and
+   skips symlinks; corrupt input is reported, not rewritten into source notes.
+
+Deliberately deferred (no incomplete hardware features shipped)
+6. New library thumbnail cache/folder navigation/additional sorts/progress bars.
+   Existing recursive library and recent-book behavior remain.
+7. Reader-managed sleep/wake/suspend/cover sleep screen. Power still exits to
+   Amazon UI. No powerd suspend or /sys/power/state write was added.
+8. Frontlight/warmth sliders and restore. No new light or warmth control runs.
+
+Core-dump suppression preparation
+- Opt-in zreader-maintenance.sh with status / disable-core-dumps /
+  undo-core-dumps; optional ZREADER_DISABLE_CORE_DUMPS=1 launcher hook, default
+  OFF. It creates only an empty /mnt/us/DISABLE_CORE_DUMP and an ownership receipt.
+- Undo removes only the still-empty regular marker with matching inode/device.
+  Existing, nonempty, replaced or symlink markers are preserved. No dumps deleted.
+  Inode changes across remount/reboot can make undo refuse; inspect manually.
+- Exact commands / undo / risks in README. No change was applied to any device.
+- Public MIP wiki and MobileRead reports recommend this firmware sentinel for
+  KPPMainApp/KPPMainAppV2 and Mesquite. Exact PW6 firmware core_pattern/handler /
+  upstart implementation has NOT been inspected, so efficacy is unverified.
+  No rootfs/upstart/core_pattern/jailbreak setting was modified; ulimit in this
+  shell could not disable dumps from an already-running Amazon daemon anyway.
+- Sources: https://mip-wiki.pages.dev/database/crashlog/
+  https://www.mobileread.com/forums/showthread.php?t=366779
+  https://www.mobileread.com/forums/showthread.php?t=365536
+
+Regression guardrails kept
+- Static arm-linux-musleabihf hard-float executable; Zig 0.17.1, MuPDF 1.28.6.
+- REAGL text turns, two render workers, 14 raster-cache slots, directional
+  prefetch, heavy-transition GC16 FULL and image-only 16-level dithering intact.
+- Hardware dark mode/inversion completely untouched. No FBIOPUT/night mode or
+  /proc/hwtcon writes. No new physical text-page flashes outside existing policy.
+- Periodic default remains the previously requested 8; Off remains heavy/context
+  only. Menu/library/overlay context cleans remain as in 0.5.1.
+- Launcher pause list is EXACTLY: awesome volumd blanket Xorg (not cvm).
+- Original malformed calibre PDF's J/E drop-cap overlap on pages 17/19 still
+  reproduces the original drawing, independently seen in mutool and Poppler.
+  No publisher geometry was invented and no PDF CSS/reflow introduced.
+
+Tests, all passing (see logs alongside this report)
+- tests/run.sh: 21 Zig unit tests (including original 11), exhaustive real EPUB
+  anchor/quote/quad checks across 54 typography combinations, clean document
+  reopen, repeated-quote migration, checksum fail-closed; dictionary exact and
+  inflected lookup/normalization/size bounds; 16 malformed-file cases + safe
+  unterminated gloss; native search PDF/EPUB integration.
+- tests/verify.py: all 8 existing integration groups pass, including exact
+  selection/edit/delete/handles, static ELF ABI and unchanged PDF reference pixels.
+  Its expected EPUB size was updated from old 10pt to new first 14px/10.5pt step.
+- tests/view06_verify.py: actual touch mode/slice/zoom/pan and exact reopen raster.
+- tests/epub06_verify.py: old notes migrate before CSS change; exact target/notes
+  survive repeated font/margin/spacing changes and fresh reopen; relocated mark
+  is still tappable/editable; precise new selection has correct text anchor;
+  17.25pt / 23px size round-trips with byte-identical raster.
+- tests/dictionary06_verify.py: actual single-word Define, full senses pagination,
+  no page swipe through modal, exact page restoration, no annotation side effect,
+  missing-file panel. Largest WordNet entry is 7741 bytes, below 32768-byte cap.
+- tests/search06_verify.py: actual key taps type row 085, exactly two hits on the
+  tall fixture; snippets exclude neighboring lines; jump preserves fit-width and
+  selects a lower viewport; mark clears.
+- tests/export06_verify.py: edit/copy/style/delete rewrite Markdown; export unopened
+  book; escaped markup; no symlink traversal; Notes deletion removes JSON/TXT/MD.
+- tests/maintenance06_verify.py: sandbox-only create/idempotence/undo, existing /
+  modified/replaced/symlink preservation; launcher/helper sh -n passes.
+- tests/refresh_verify.py: all 8 existing refresh groups pass, unchanged rates:
+  digital-big 434 pages: every-8 74 / 17.05 per 100; Off 30 / 6.91 per 100.
+  digital-small 332 pages: every-8 45 / 13.55 per 100; Off 4 / 1.20 per 100.
+  digital-big 1->2->3->4: GC16 FULL, GC16 FULL, REAGL FULL, REAGL FULL.
+- All rendering/input tests use the box. Physical flash efficacy, firmware marker,
+  Amazon pause/resume, device timings and hardware interactions remain unverified.
+  Existing malformed-PDF CMap warnings are nonfatal; render_errors=0 in UI tests.
+
+Storage/licences
+- ARM binary: 6590796 bytes (6.29 MiB); SHA256:
+  171a4dc658a0eb1df33a1cff1e614f0cc5d3b096f68b4debd1cb2bae195667cd
+- WordNet index: 14449559 bytes (13.78 MiB), 147306 keys / 117036 shared glosses.
+  Copyright 2006 Princeton University, redistributable WordNet licence retained.
+  https://wordnet.princeton.edu/license-and-commercial-use
+- Index SHA256 d2db381060fab8254f1b68551ffa1ec6d533c4662f22a2bb343abfd4b16a297b
+- Official WNdb-3.0.tar.gz SHA256:
+  658b1ba191f5f98c2e9bae3e25c186013158f30ef779f191d2a44e5d25046dc8
+- Source includes reproducible dictionary builder + official input archive, all
+  current reader sources/tests/fonts/licences and original MuPDF source tar.
+  Source package is for the BOX/PC, not the Kindle's user partition.
+- No thumbnail, extra fonts, network dictionary client or device-control payload.
+
+Artifacts
+  ../stage/zr06.tgz                    runtime, same baseline layout + dictionary/helper
+  ../stage/zr06-source.tgz             corresponding source + MuPDF + WordNet source
+  ../stage/zr06.sha256                 archive/binary/dictionary manifest
+  ../stage/zr06-sizes.json             exact runtime/archive sizes
+  shots/40_* through shots/68_*        1272x1696 PNGs and *_preview.png
+  README                              controls/install, scope, exact marker commands
+
+Remaining limits: features 6-8 deferred; pan applies on release, no pinch;
+English keyboard/dictionary, no OCR/cross-page search phrases; bounded one-chapter
+EPUB index and fail-closed complex text-order cases; legacy same-basename books
+still share note/export filenames. No physical device deployment or verification.

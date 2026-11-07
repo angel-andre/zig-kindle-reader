@@ -1,0 +1,1 @@
+PASS runtime layout identical to zr06; dictionary unchanged; current source/dependencies included; private books excluded; manifests and source hashes match

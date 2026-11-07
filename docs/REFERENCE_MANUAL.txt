@@ -1,0 +1,350 @@
+zreader 0.7.0 - PDF/EPUB reader for Kindle Paperwhite 12th gen (PW6), 1272x1696
+
+Install
+  /mnt/us/zreader/zreader          binary (armhf, static)
+  /mnt/us/zreader/zreader-run.sh   launcher (pauses the Amazon UI, restores it on exit)
+  /mnt/us/extensions/zreader/      KUAL entries: Library, Continue last book, Debug: timings
+  Books are read from /mnt/us/Books (recursive; .pdf and .epub).
+
+Controls
+  Tap right 30% / swipe left     next page
+  Tap left 30% / swipe right     previous page
+  Tap centre                     menu: page x/y, progress, go-to slider, Contents, Notes,
+                                 Refresh (full flash), Go to start, Text -/+, Margin -/+
+                                 (EPUB), Trim margins (PDF), Search, Export all, Library, Quit
+  Long-press a word, drag        select; then Underline / Highlight / Copy to notes / Cancel
+  Single-word selection          also offers Define (offline English dictionary)
+  Selection handles              drag either endpoint after lifting to refine the words
+  Tap an underline/highlight     Delete / Change style / Copy to notes / Cancel
+  Notes list                     tap jumps to the note, long-press deletes it
+  Triple-tap a corner            quit (the Amazon UI comes back)
+  Power                         quit by default; sleep only after explicit opt-in
+  The reader also quits after --idle-min minutes without input (default 10).
+
+Files
+  /mnt/us/zreader/state/<hash>.json   last page, font, margin, trim per book
+  /mnt/us/zreader/notes/<book>.json   underlines/highlights (drawn as overlays; books are
+                                      never modified)
+  /mnt/us/zreader/notes/<book>.txt    plain-text export of current passages (rewritten on edit/delete)
+  /mnt/us/zreader/export/<book>.md    clean Markdown, rewritten on every note change
+  /mnt/us/zreader/dictionary/wordnet.zdict  compact offline English dictionary
+  /mnt/us/zreader.log                 log; --debug adds per-turn timings
+  /mnt/us/zreader-stderr.log          library warnings
+
+Options
+  --wf reagl|gl16   page-turn waveform (default reagl; gl16 is for testing)
+  --no-images       skip images in pages (experimental)
+  --debug --idle-min N --no-governor --data DIR --books DIR --log FILE
+  --dictionary FILE  optional override of DATA/dictionary/wordnet.zdict
+
+Licences
+  zreader links MuPDF (AGPL-3.0, https://mupdf.com); source of this program and
+  MuPDF must be offered with binaries. UI font: Noto Sans (SIL OFL 1.1, see
+  src/fonts/NotoSans-OFL.txt). Book font: Charis SIL (SIL OFL 1.1, built into MuPDF).
+
+Build
+  ./build-mupdf.sh then ./build.sh  (Zig 0.17.1)
+
+Version 0.7 scope: library, LIPC light/warmth and opt-in sleep
+  All v0.6 reading/annotation/dictionary/search/export functions remain.
+  Library controls: Recent -> Title -> Progress (persisted); Folder opens a
+  picker of relative Books subfolders (nested paths remain distinct), All resets.
+  Each book shows a progress bar. Only visible covers are requested, never an
+  entire PDF read on the UI thread. Low-res first pages (96x128 grayscale) are
+  rendered by an isolated low-priority child, with a 12-second deadline and
+  256 MiB address-space ceiling. Bad/too-complex covers show a clean placeholder.
+  The background cache is DATA/thumbs, <=10 MiB of regular .zrt cover files;
+  oldest-file eviction occurs before publication, independent of input handling.
+  The RAM thumbnail LRU is 32 slots (~0.4 MiB). No books are modified.
+  Cache identity includes full path, size and mtime (changed books refresh next
+  session; no live filesystem watcher). Library scan uses filenames/state only.
+
+  Menu -> Light / Sleep (also available in Library): separate frontlight/warmth
+  minus/plus buttons and drag sliders, native 0..24 steps. Startup reads powerd
+  off-thread; missing LIPC is shown as unavailable. No values are written at
+  startup or automatically restored from disk. Only a deliberate adjustment
+  queues a write, debounced 250 ms. powerd owns hardware curves and persistence.
+  Failed commands time out after 2 seconds and show last confirmed values.
+  Only flIntensity/currentAmberLevel LIPC properties are used; never sysfs.
+
+  Power button sleeps is EXPERIMENTAL and DEFAULT OFF. Explicit menu opt-in
+  persists in DATA/ui07.json (separate from full-refresh settings). With OFF,
+  power retains the original exit-to-Amazon-UI behavior. With ON, the power
+  evdev fd is exclusively grabbed; if that fails the option remains OFF.
+  A completed GC16 cover/Sleeping-screen update precedes a powerButton request;
+  preventScreenSaver is released for sleep. powerd, not this reader, suspends
+  the device. goingToScreenSaver, outOfScreenSaver, readyToSuspend and
+  wakeupFromSuspend events are subscribed through lipc-wait-event. State polls
+  recover lost user-wake events; wakeupFromSuspend alone is NOT treated as a
+  user wake. Prefetch pauses during sleep, touch is ignored and GC16 restores
+  the exact view on wake. Transition/CLI failures disable sleep with a message.
+  Helpers get Linux parent-death signals; no orphan subscription/render worker
+  is intended after a killed reader. No passcode, OTA, jailbreak or dark-mode
+  setting is changed. Passcode-protected stock UI/long hibernation remain
+  UNVERIFIED; do not enable sleep with a passcode until separately validated.
+  Automatic idle still exits; it does not initiate reader-managed sleep.
+
+  Physical powerd events, suspend, input grab, wake, cover persistence, battery
+  drain and frontlight curves require the on-device test below. Host mocks and
+  screenshots are NOT hardware verification. Do not deploy without approval.
+
+Upgrade / runtime package layout
+  zr07.tgz keeps the earlier layout: out/zreader, zreader-run.sh, kual/,
+  README and COPYING; it additionally includes dictionary/ and the opt-in
+  zreader-maintenance.sh. Copy out/zreader to /mnt/us/zreader/zreader, the
+  launcher/helper to /mnt/us/zreader/, dictionary/ to /mnt/us/zreader/dictionary/,
+  and kual/zreader/ to /mnt/us/extensions/zreader/. Keep state/, notes/ and
+  settings.json. Do NOT install the source archive or copyrighted test books.
+  Nothing in this build has been deployed to a Kindle.
+
+PDF views
+  Menu row 2 cycles Fit page -> Fit width -> Zoom 1.5x -> Zoom 2x.
+  Fit width always auto-crops, regardless of the separate Fit-page Trim toggle.
+  Edge taps, horizontal swipes or vertical swipes step by a screen minus 96 px.
+  Up/Down also step slices; the last slice may end with white space.
+  Double-tap the central region to cycle 1.5x / 2x / original fit mode.
+  Drag once to pan a zoomed page (applies on release); no pinch gesture is used.
+  The zoom is relative to the current Fit-page/Fit-width base; cropped width
+  remains cropped in zoom, even with the independent Trim toggle off.
+  Mode, slice, pan and base mode persist per book; prefetch uses the same view.
+  Edge page turns remain immediate; only centre-menu taps wait 220 ms to
+  distinguish a double-tap. Touch selection uses the visible view's matrix.
+
+EPUB solidity
+  Notes and reading targets store chapter + Unicode-scalar offsets in chapter
+  text, excluding layout whitespace and optional hyphens, plus a checksum.
+  Opaque MuPDF bookmarks are pointers and are NEVER serialized. Character
+  anchors survive new document/context instances, not just a live relayout.
+  Legacy EPUB notes migrate BEFORE changing their old typography. The original
+  quote and first quad disambiguate repeated passages on the old page. Their
+  current quads are resolved from text after relayout, including selections
+  split across newly laid-out pages. PDF annotations retain their old schema.
+  A saved within-page reading target is retained through repeated relayouts,
+  avoiding accumulated drift toward the beginning of a chapter.
+  Nine font sizes: 14/16/18/20/23/26/30/34/40 CSS-pixel equivalents (10.5-30 pt),
+  i.e. approximately 44-125 physical pixels at 300 DPI. Old 9pt states remain
+  readable; the next Text+ selects 14px equivalent. Quarter-point sizes persist.
+  Line spacing cycles 1.15 / 1.40 / 1.70; margins remain independently adjustable.
+  Chapter indexes are UI-only, lazy and bounded to 131072 words / 2097152
+  Unicode scalars / 4096 pages per chapter (about 13 MiB worst-case scratch).
+  Changed/complex text order or larger chapters fail closed: passages remain in
+  Notes and exports, marked location unresolved, rather than drawing elsewhere.
+  Unresolved legacy notes are not repeatedly guessed against later layouts.
+
+Offline English dictionary
+  WordNet 3.0 derivative: 147306 sorted lemma keys, 117036 shared glosses;
+  wordnet.zdict is 14449559 bytes (13.78 MiB), well below the 40 MB budget.
+  Copyright 2006 Princeton University; redistribution under the WordNet licence,
+  retained in dictionary/LICENSE. Attribution: WordNet 3.0 (2006),
+  https://wordnet.princeton.edu/. No endorsement is implied.
+  A read-only, bounds-checked mmap index gives binary-search lookup. All senses
+  fit a paginated definition panel. No runtime internet use, account or service.
+  Simple inflections, possessives, punctuation, common irregulars and common
+  Latin accents get fallback normalization; this is not a full morphological
+  analyzer. The source set has no pronunciation/audio or specialist coverage.
+  Rebuild and source URL/checksum are in dictionary/FORMAT and tests/REPORT06.
+
+In-book search
+  Search in the menu opens a large English keyboard (letters, numbers, space,
+  apostrophe, hyphen, underscore; 64-character query). MuPDF matches without
+  case sensitivity. Results include context and 1-based page numbers.
+  Scan is incremental, one page per event-loop step, and Stop/edit or Close
+  cancels between pages. Up to 200 matches are retained; refine a broad query.
+  Tapping a hit preserves the PDF view, scrolls/pans to it, and briefly marks it
+  for 1.6 seconds. The mark clears without adding a note. No OCR; phrases that
+  straddle physical page boundaries and broken source-PDF text order may miss.
+
+Markdown exports
+  Every annotation creation, style change, copy and deletion rewrites JSON,
+  TXT and /mnt/us/zreader/export/<book>.md. Markdown includes passage, style,
+  current page and EPUB text location. Text is quoted and Markdown/HTML escaped.
+  Menu Export all also exports notes of books that are not currently open.
+  It skips symlinks, reports corrupt input, and never modifies the book or
+  source notes. Existing basename-based note filenames remain compatible;
+  different books with identical basenames still share the legacy note file.
+
+Reversible crash-dump suppression (prepared, NOT applied)
+  Safest documented firmware mechanism is an empty USB-root marker:
+      /mnt/us/DISABLE_CORE_DUMP
+  Use the helper, which tracks ownership and preserves pre-existing markers:
+      sh /mnt/us/zreader/zreader-maintenance.sh status
+      sh /mnt/us/zreader/zreader-maintenance.sh disable-core-dumps
+  Exact undo:
+      sh /mnt/us/zreader/zreader-maintenance.sh undo-core-dumps
+  Optional launcher opt-in for a session:
+      ZREADER_DISABLE_CORE_DUMPS=1 /mnt/us/zreader/zreader-run.sh @last
+  This creates the same persistent marker; use the helper undo afterwards.
+  Default launcher behavior does NOT create it. No reboot is scripted.
+  Undo removes only the still-empty regular file whose inode/device match the
+  helper's receipt. A pre-existing, changed, replaced or symlink marker is kept.
+  Filesystem identity changes after remount/reboot may make undo refuse; it
+  never guesses ownership. Inspect manually in that case.
+  No old .core file is deleted. No core_pattern, upstart job, rootfs, jailbreak
+  flag, framebuffer setting or Amazon process configuration is modified.
+  Risks: diagnostic crash evidence is lost; suppression does not fix crashes;
+  firmware may ignore the marker or still write other logs/minidumps. The exact
+  PW6 firmware dump-handler/core_pattern/upstart mechanism is NOT inspected or
+  verified here, so global suppression cannot be guaranteed. A shell ulimit
+  would affect only descendants, not the already-running KPPMainAppV2 daemon.
+  Sources (public reports, not on-device verification):
+    https://mip-wiki.pages.dev/database/crashlog/ (updated 2026-09-16)
+    https://www.mobileread.com/forums/showthread.php?t=366779
+    https://www.mobileread.com/forums/showthread.php?t=365536
+
+v0.6 verification
+  ./build.sh && ./tests/run.sh
+  python3 tests/verify.py
+  python3 tests/view06_verify.py
+  python3 tests/epub06_verify.py
+  python3 tests/dictionary06_verify.py
+  python3 tests/search06_verify.py
+  python3 tests/export06_verify.py
+  python3 tests/maintenance06_verify.py
+  python3 tests/refresh_verify.py
+  See tests/REPORT06, test result logs, and shots/40_* through shots/68_* plus
+  small previews. All are box tests; no physical panel, sleep/light controls,
+  launcher pause/resume or firmware marker behavior is newly hardware-verified.
+
+Version 0.5 changes
+  Exact word hit testing uses the displayed cache slot's page/crop/scale matrix.
+  Whitespace presses no longer jump to arbitrary nearby words; drag snapping is
+  bounded. DU gives live drag feedback and REAGL cleans up after release.
+  Start/end handles have enlarged, nearest-centre hit targets. Wrapped handles
+  cannot accidentally grab the opposite endpoint. Slot-0 multitouch tracking
+  prevents another finger from moving the selection.
+  Annotation popups edit/delete existing marks; JSON and TXT are both rewritten.
+  Legacy notes stay compatible; duplicate same-line quads are consolidated.
+  PDF drawing is not styled or reflowed. EPUB uses document-local CSS.
+  REAGL page turns, 2 workers, 14 cache slots and directional prefetch are intact.
+  The launcher pauses awesome, volumd, blanket and Xorg; it does not pause cvm.
+
+Important source-layout limitation
+  The independent drop-cap source-layout limitation remains unresolved.
+  digital-small' supplied PDF is calibre-generated and already contains the
+  overlapping J/E on physical pages 17 and 19. Both mutool 1.28.6 at 200 DPI and
+  Poppler render the same defect. Fonts are embedded. The PDF uses x=5 pt both
+  for the initial and the first body word: there is no reserved drop-cap indent.
+  Before/after screenshots intentionally remain identical: no source-faithful
+  renderer can recover a missing publisher layout from these drawing commands.
+  An original EPUB or correctly laid-out PDF is needed for a faithful correction.
+  The original input format of calibre's conversion is not recorded; EPUB origin
+  is plausible, not proven. The PDF itself is fixed-layout, not reflowable.
+  Logical selection DOES join the displaced initial to its body word, rather
+  than including the chapter heading and location in between.
+
+Local verification
+  ./build.sh
+  ./tests/run.sh
+  python3 tests/verify.py
+  Tests require ../testbooks/digital-small1.pdf (not distributed) and a static host MuPDF
+  build; Pillow is used for PNGs. tests/REPORT records evidence and limitations.
+  No device deployment or on-device performance claim is made for this build.
+
+Sharing
+  Keep zr07-source.tgz with zr07.tgz. The source archive includes this program,
+  build scripts, tests, fonts/licences and the complete MuPDF 1.28.6 source
+  distribution. Do not share the copyrighted test book. No device identifiers,
+  network addresses or private SSH credentials belong in either archive.
+
+Version 0.5.1: targeted ghosting control
+  Hardware dark mode is intentionally respected. No framebuffer inversion,
+  grayscale setting, night-mode ioctl or /proc/hwtcon state is changed.
+  Startup logs the inherited grayscale mode (2 means hardware-inverted 8-bit).
+  Normal text-to-text turns retain REAGL and the original worker/cache path.
+  Heavy covers, image/dark pages, and substantial dark/light pixel transitions
+  request GC16 + FULL across the entire screen. Both transition directions are
+  checked, so inherited hardware inversion does not defeat the detection.
+  Opening books, returning from menus/library, and dismissing image-page popups
+  also get GC16 FULL. No unconditional two-stage flash is introduced.
+  Full refresh: every N pages cycles Off / 4 / 8 / 16 and persists in settings.json.
+  The original requested default is 8; Off disables routine text-page cleans,
+  but never disables heavy-transition/context safety cleans.
+  --full-refresh off|4|8|16 overrides the setting for one session.
+  Workers sample darkness/ink cheaply while rendering and collect raster-image
+  footprint coverage during the same draw pass. A small retained sample grid
+  measures the actual outgoing-to-incoming page delta without rerendering.
+  Opaque, unrotated image pixels alone get ordered 16-level grayscale dithering;
+  text/vector edges and pixels untouched by the image stay unchanged. Transparent,
+  masked, rotated or grouped images may retain MuPDF's original grayscale.
+  --no-image-dither disables this. No aggressive contrast clipping is applied.
+
+Refresh validation
+  ./tests/run.sh
+  python3 tests/verify.py
+  The test script builds both render probes. Then run:
+  python3 tests/refresh_verify.py
+  The latter audits every page of ../testbooks/digital-big.pdf and digital-small1.pdf,
+  tests live event-stream decisions/menu persistence and clipped-image dithering.
+  Default every-8 rates: digital-big 74/434 (17.05 per 100); digital-small 45/332 (13.55).
+  Heavy/context only (periodic Off): 30/434 (6.91) and 4/332 (1.20).
+  digital-big pages 1/2/3/4 choose GC16 FULL / GC16 FULL / REAGL / REAGL.
+  See tests/REPORT051 and shots/30_* for evidence. These are host policy/render
+  checks, not an on-device proof that GC16 alone removes all physical residue.
+
+V0.7 verification on this box
+  PATH=../tools/bin:$PATH ./build.sh
+  ./tests/run.sh
+  python3 tests/platform07_verify.py
+  python3 tests/ui07_verify.py
+  All README v0.6 verification commands remain valid; see tests/REPORT07.
+  shots/70_* through shots/83_* plus *_preview.png show the actual host UI.
+  These are framebuffer-value previews, NOT a simulation of hardware dark mode.
+
+Manual PW6 test plan (NOT run; run each Mac command only with approval)
+  Prerequisites: install approved zr07 runtime while reader/KOReader are closed,
+  retain the v0.6 binary, notes and state backup. Keep a key-only SSH session
+  reachable. Do not use USB mass storage during the test. Do not enable sleep
+  with a stock passcode or rely on it overnight until validated.
+  Substitute KINDLE_HOST locally; no network identifiers are included here.
+  Mac/zsh setup (this only defines an SSH wrapper):
+      export KINDLE_HOST='<your Kindle host>'
+      kssh() { ssh -i "$HOME/.ssh/kindle_ed25519" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=10 -p 2222 root@"$KINDLE_HOST" "$@"; }
+  1. Baseline, before launch:
+      kssh 'lipc-get-prop -i com.lab126.powerd flIntensity; lipc-get-prop -i com.lab126.powerd currentAmberLevel; lipc-get-prop -s com.lab126.powerd state; df -k /mnt/us'
+     Record both native levels. Hardware dark mode must remain ON throughout.
+  2. In terminal A launch; terminal B can issue the remaining read/recovery calls:
+      kssh '/mnt/us/zreader/zreader-run.sh --debug @last'
+      kssh 'tail -f /mnt/us/zreader.log'
+     Startup must NOT change either light level. In Library quickly page through
+     85 books, switch Recent/Title/Progress, open each folder. First covers may
+     arrive later; taps must not wait on cover generation, including large PDFs.
+      kssh 'du -sk /mnt/us/zreader/thumbs'
+     Cache should stay around/below 10240 KiB of payload (filesystem allocation
+     and directory overhead can make du slightly higher). No book disappears.
+  3. Menu -> Light / Sleep: leave unchanged first, read levels again with step 1.
+     Drag brightness and warmth separately, then test 0, 1, 23, 24 and +/- ends.
+     Rapid drags should coalesce; latest target should match the LIPC reads.
+     Restore your preferred values explicitly. Quit/reopen: powerd levels stay,
+     no startup write. Check warmth does not unexpectedly alter brightness.
+  4. With Power button sleeps OFF, press power: reader exits and stock UI resumes.
+     Relaunch, open a text page, note page/font/zoom/marks, then enable the toggle.
+     Press/release power once. Expect cover or clean Sleeping screen first;
+     log: drawing cover -> cover completed -> screensaver confirmed. No double
+     toggle, stray page turn, stuck touch, Amazon overlay or dark-mode change.
+     After about 15-30 seconds, from terminal B (SSH may pause in deep suspend):
+      kssh 'lipc-get-prop -s com.lab126.powerd state'
+     Expected screenSaver/suspended before wake, active after. A connected SSH
+     session can delay suspend; do not interpret delayed suspend as proof.
+  5. Press power once to wake. Expect GC16 restore of the SAME page/view/notes,
+     working touch and no leftover cover. Repeat 5 cycles with a PDF, EPUB and
+     Library; test a rapid second press and a 2-minute sleep. Observe event logs
+     for all four subscribed events. Powerd housekeeping wake must not expose
+     the reading page while still in screensaver. Then toggle OFF and verify
+     original power-button exit. Check battery over a separate longer test.
+  6. On timeout, option auto-disables; do not keep retrying. Emergency recovery
+     is independent of reader responsiveness (terminal B):
+      kssh 'sh /mnt/us/zreader/zreader-maintenance.sh restore-ui'
+     This terminates the reader, resumes awesome/volumd/blanket/Xorg, restarts
+     pillow/statusbar, clears preventScreenSaver and requests the stock home UI.
+     If still asleep, press power ONCE. It does not change light or dark mode.
+     Before retrying a failed opt-in session, reset ONLY the reader UI settings:
+      kssh 'printf "%s\n" "{\"sort\":0,\"power_sleeps\":0}" > /mnt/us/zreader/ui07.json'
+     If SSH cannot connect during genuine suspend, wake with power and retry
+     recovery. If neither works, use the device's standard hardware reboot;
+     never edit system files or remove jailbreak/OTA markers to recover.
+  References inspected November 6, 2026:
+    https://github.com/koreader/koreader/blob/master/frontend/device/kindle/device.lua
+    https://github.com/koreader/koreader/blob/master/frontend/device/kindle/powerd.lua
+    https://github.com/koreader/koreader/blob/master/platform/kindle/koreader.sh
+  This is an original implementation of the same powerd workflow, not a claim
+  of KOReader's years of device coverage. No physical hardware test was run.

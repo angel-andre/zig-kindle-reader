@@ -1,0 +1,103 @@
+zreader 0.5.1: targeted heavy-page ghosting control (not deployed)
+
+Baseline
+  Captured v0.5 executable SHA256:
+  05f6990562646e15d021cc235f001851f0eb46ea5766b545259b8d51fdf7eabf
+  This matches the deployed 05f69905 baseline supplied in the task.
+
+Dark mode / driver findings
+  Angel confirmed intentional hardware dark mode. It remains respected.
+  This code renders black-on-white bytes and never software-inverts the buffer.
+  No FBIOPUT_VSCREENINFO, SET_NIGHTMODE, inversion flags or procfs writes added.
+  Local FBInk's eink/mtk-kindle.h documents grayscale=2 as 8-bit hardware inversion;
+  fbink.c:2598-2604 documents the driver's preference for this inherited state.
+  Startup now logs v.grayscale and whether it is 2, without changing it.
+  Current physical procfs/framebuffer state was NOT inspected from the box:
+  no Mac/Kindle command was run and no inversion behaviour was changed.
+  Existing global fast flags are retained. FBInk's MTK header documents their
+  heuristic for DU/GL16/GC16_PARTIAL, not forced GC16 FULL, so they need not be
+  disabled for the new clean requests.
+
+Root of the refresh-policy defect
+  v0.5 already paired REAGL with the FULL update_mode value. That does NOT turn
+  REAGL into a flashing waveform. It stayed REAGL even after a dark cover.
+  The policy had no per-page darkness/image or outgoing-pixel history, and no
+  periodic refresh control in the provided source. GC16 was effectively limited
+  to opening/manual refresh/exit. The new policy explicitly chooses waveform 2
+  (GC16) AND FULL, with full-screen geometry and GC16 histogram fallbacks.
+
+Implementation
+  1. Workers collect image footprints during the existing display-list draw.
+     A 32-pixel union grid avoids double-counting overlaps. This is conservative
+     bounding coverage: clipping/transparency can overestimate coverage.
+  2. A fixed step-8 sample grid measures mean ink, dark-pixel fraction and
+     midtone fraction. Cached metrics accompany each of the 14 pixel slots.
+  3. A retained 33,708-byte grid records the submitted base page, not transient
+     menu/selection overlays. Transitions measure <80 -> >192 and the reverse.
+  4. Heavy = image coverage >=25% plus ink >=12% or midtones >=2.5%; or mean
+     ink >=25% / dark fraction >=30%; or either large-transition fraction >=14%.
+     Covers and opening/context refreshes also clean. Both transition directions
+     keep the policy correct when the driver inverts physical light/dark.
+  5. Normal text keeps REAGL, two workers, directional prefetch and cached pixels.
+     The requested periodic setting defaults to every 8 turns since a clean;
+     Off / 4 / 8 / 16 menu choices persist in settings.json. Off disables only
+     periodic text cleans, never heavy/context cleans. --full-refresh overrides
+     settings for one session. Startup logs the effective setting.
+  6. Opening books and returning from menus/library force full-screen GC16 FULL.
+     Dismissing annotation/selection popups on pages with images does likewise.
+  7. Opaque axis-aligned images get 4x4 ordered dithering to 16 grayscale levels,
+     immediately after that image draw. A pre-draw snapshot ensures untouched
+     pixels, including any text outside PDF clips, are NOT modified. Subsequent
+     text/vector operations retain MuPDF antialiasing. Masks/transparency/rotation
+     are skipped; images drawn into transparency-group buffers may be unchanged.
+     No aggressive grayscale contrast stretch; black/white endpoints preserved.
+     --no-image-dither is available.
+  8. No blind two-stage white/black flash: no device measurement justifies adding
+     one yet. GC16 FULL physically clearing the reported residue needs playtest.
+
+Full-book results (same production render/metrics/decision functions)
+  Big Book of Small Python Projects: 434 pages.
+    Every 8: 74 full cleans = 17.05 per 100 pages.
+      1 opening + 1 leaving cover + 27 image + 1 dark + 44 periodic.
+    Periodic Off: 30 cleans = 6.91 per 100; 404 REAGL pages.
+  digital-small: 332 pages.
+    Every 8: 45 full cleans = 13.55 per 100 pages.
+      1 opening + 1 leaving cover + 2 image + 41 periodic.
+    Periodic Off: only pages 1/2/3/332 clean: 4 = 1.20 per 100; 328 REAGL pages.
+    All intervening body-text pages remain REAGL with periodic Off.
+  digital-big 1 -> 2 -> 3 -> 4:
+    GC16 FULL -> GC16 FULL -> REAGL FULL -> REAGL FULL.
+    Cover ink=0.27709; dark=0.20998. Leaving it releases 20.998% of samples.
+    Blank p2 ink=0; title p3 ink=0.01210; blank p4 ink=0.
+  Representative host audit overhead: ~63-74 us/page for all metrics, delta and
+  sample snapshot together, vs ~1.5-5.3 ms/page raster. Not an ARM timing claim.
+
+Tests
+  11 Zig tests pass: all 7 prior v0.5 cases plus adaptive/periodic policy,
+  GC16 FULL/inversion-free ioctl fields, stride-aware samples and image-popup
+  full-clean behaviour. Prior 4,770 word-centre hit checks remain green.
+  All 8 v0.5 black-box regression groups pass (selection/handles/notes/EPUB/etc).
+  Refresh black-box tests pass: complete book audits with every=8 and Off;
+  actual 1/2/3/4 event-stream decisions; persistent refresh setting, menu/library
+  return and image-popup dismissal; clipped-gradient-image quantization with exact unchanged outside text.
+  Static ARM EABI hard-float and static x86_64 builds verified by the old suite.
+  Launcher pause list remains: awesome volumd blanket Xorg (not cvm).
+
+Reproduce
+  ./build.sh
+  ./tests/run.sh
+  python3 tests/verify.py
+  ../zig/zig cc -target x86_64-linux-musl -O2 -I src \
+    -I ../mupdf-1.28.6-source/include tests/render_stats_probe.c src/render.c \
+    ../mupdf-1.28.6-source/build/hostmusl-release/libmupdf.a \
+    ../mupdf-1.28.6-source/build/hostmusl-release/libmupdf-third.a \
+    -lpthread -lm -static -o out/render-stats-probe
+  python3 tests/refresh_verify.py
+  Logs/CSVs: tests/*refresh8.*, tests/*refreshoff.*, tests/refresh051-results.txt.
+  Device-size pages and small previews: shots/30_*.png.
+
+Limits
+  No deployment, device measurement, procfs mutation, Amazon connection or public
+  upload. Hardware dark mode is unchanged. Physical ghost removal and perceived
+  flash duration require testing on the Kindle. The independent malformed PDF
+  drop-cap source layout remains unchanged from v0.5.

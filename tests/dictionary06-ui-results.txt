@@ -1,0 +1,3 @@
+PASS physical single-word long press -> Define; English definition, Next senses, isolated modal swipes, exact page restoration and no notes/page-turn side effects
+PASS absent dictionary shows actionable offline error and closes safely
+PASS dictionary selection/panel/pagination/closed/missing screenshots and small previews

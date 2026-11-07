@@ -1,0 +1,14 @@
+{
+  "binary_bytes": 6645540,
+  "dictionary_bytes": 14449559,
+  "install_file_bytes": 21163823,
+  "runtime_archive_bytes": 8625009,
+  "source_archive_bytes": 85147874,
+  "runtime_files": 11,
+  "install_mib": 20.183
+}
+882e24161be4cf63c4960ba5a5da246c064691ec236220ad271bfe09e99a666d  zr07.tgz
+cd6d7d8e40070b0835ece129226ded3c0ed4ce73748e9c13ed775ff3fc4e6698  zr07-source.tgz
+4d037283147b8d66f3bbe186ee30bb2569e436a5214f4d7500a903fc265e3418  out/zreader
+d2db381060fab8254f1b68551ffa1ec6d533c4662f22a2bb343abfd4b16a297b  dictionary/wordnet.zdict
+

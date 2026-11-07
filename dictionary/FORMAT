@@ -1,0 +1,14 @@
+zreader dictionary format 1 (little-endian, all offsets bounds-checked)
+32-byte header: magic[8]="ZRWN3001", uint32 keycount,indexoff,keyoff,refoff,glossoff,end.
+16-byte sorted-key index records: uint32 keyoffset; uint16 keylength,refcount;
+uint32 refoffset,reserved=0. Key offsets relative to keyoff (not NUL terminated).
+Reference arrays: uint32 gloss offsets, relative to glossoff; glosses UTF-8/NUL.
+References preserve WordNet's frequency-first sense order within each part of speech.
+Noun/verb/adjective/adverb senses share gloss storage; multi-word lemmas use spaces.
+Derived from WordNet 3.0, Copyright 2006 Princeton University, WordNet licence
+(accompanying LICENSE). No claim of endorsement. No network lookup at runtime.
+Rebuild: python3 dictionary/build.py dictionary/source/WNdb-3.0.tar.gz dictionary/wordnet.zdict
+Download source: https://wordnetcode.princeton.edu/3.0/WNdb-3.0.tar.gz
+Source licence: https://wordnet.princeton.edu/license-and-commercial-use
+This derived index is modified for zreader: gloss-only, compact shared storage;
+no relation graph, morphological exception database or pronunciation/audio data.

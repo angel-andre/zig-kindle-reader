@@ -1,0 +1,95 @@
+zreader 0.7.0 / LOCAL BOX BUILD ONLY / NOT DEPLOYED
+
+Done
+6. Lazy visible-row cover requests; input path does no disk I/O, rendering,
+   waiting mutex or child wait. RAM LRU 32 x 96x128 grayscale. Single low-priority
+   background worker reads cache and starts an isolated first-page renderer.
+   Child deadline 12s, address space <=256 MiB, parent-death cleanup. Broken /
+   huge-complex covers show a placeholder. Disk cache DATA/thumbs is capped at
+   10 MiB regular .zrt files with oldest-file eviction; symlinks not followed.
+   Cache keys: path + file size + mtime, refreshed next session if book changes.
+   Relative subfolder picker (including distinct nested paths), All reset,
+   persisted Recent/Title/Progress sorts, per-book reading progress bars.
+8. Native powerd 0..24 brightness and warmth; separate +/- and drag sliders.
+   Startup values read asynchronously; no startup write or saved-value override.
+   Explicit changes alone queue writes, 250ms trailing debounce. Pending final
+   changes flush on normal exit; failed writes show last confirmed levels.
+   Commands spawn without a shell and timeout/reap after 2s; no extra libraries.
+7. Power button sleeps toggle, default OFF, explicit opt-in persists separately
+   in ui07.json. Exclusive raw power input grab required; OFF retains v0.6 exit.
+   Completed cover/Sleeping-screen GC16 precedes deliberate powerButton request.
+   powerd owns suspend. Subscribes goingToScreenSaver/outOfScreenSaver/
+   readyToSuspend/wakeupFromSuspend; state fallback only after confirmed sleep.
+   Housekeeping wakeupFromSuspend alone does not expose the reading page.
+   Prefetch pauses, sleep touch ignored, wake restores exact cached view via GC16.
+   Transition deadline 8s, CLI/subscription failure disables sleep and restores.
+   Independent maintenance restore-ui stops reader, CONTs exact paused UI list,
+   restarts pillow/statusbar, clears inhibitor and requests stock home.
+
+Preserved guardrails
+- Static ARM EABI hard-float arm-linux-musleabihf; Zig 0.17.1.
+- Existing 2 render workers, directional prefetch, 14 raster cache slots,
+  REAGL normal turns, heavy-transition GC16 FULL, image-only dithering unchanged.
+- Launcher pause list EXACTLY awesome volumd blanket Xorg; cvm not paused.
+- Inherited hardware dark mode is untouched. No backlight sysfs writes, framebuffer
+  inversion/mode-setting, /sys/power/state, Amazon login/network connection,
+  rootfs/upstart changes, crash-dump/jailbreak/OTA changes or deployment.
+- No copyrighted books or device/network identifiers included in release.
+
+Tests (logs alongside this report)
+- tests/run.sh: 24 Zig units (all previous 21 plus light geometry/clamp, sorts,
+  sleep default guard). Original real-PDF coordinate/notes/handles/prefetch tests.
+  Native anchor integration across 54 EPUB typography layouts; dictionary
+  bounds/inflections/16 malformed cases and native PDF/EPUB search checks.
+- Original tests/verify.py: all 8 integration groups, static ARM/host ELF ABI,
+  precise selection/edit/delete and unchanged source-PDF reference pixels.
+- view06_verify, epub06_verify, dictionary06_verify, search06_verify,
+  export06_verify, maintenance06_verify: all existing groups retained.
+- refresh_verify: unchanged rates: digital-big every-8 74/434, Off 30/434;
+  digital-small every-8 45/332, Off 4/332. Python 1->2->3->4 remains
+  GC16 FULL, GC16 FULL, REAGL FULL, REAGL FULL. No text-pixel/dither regression.
+- platform07_verify: harmless mock LIPC commands, startup read/no-write,
+  native clamp/debounce, pending exit write, failed write/confirmed values,
+  four subscribed events, powerButton/inhibitor commands, bounded hung-command
+  kill/reap, real image-heavy PDF first-page cover, >10MiB eviction and symlink
+  preservation, independent restore-ui against mock process/service commands.
+- ui07_verify: actual evdev simulator touch stream with 85 generated books,
+  folders, title/progress persistence, bars, covers, sliders and buttons,
+  opt-in/default OFF, sleep ignores touch, power wake, byte-identical restored
+  page, simulated event/error disable. Valid sparse synthetic 175 MiB PDF
+  verifies large-file offset handling; it is NOT a 175 MiB scanned-image stress
+  test. Owner's available real image-heavy PDF is 7.4 MB, not 175 MB.
+- shots/70_*..83_*: full 1272x1696 PNGs + 318x424 previews, visually inspected.
+  Logical framebuffer values only: hardware dark mode is NOT simulated.
+
+Artifacts
+  ../stage/zr07.tgz          runtime, same layout as zr06 including WordNet
+  ../stage/zr07-source.tgz   corresponding sources/tests/fonts/MuPDF/WordNet input
+  ../stage/zr07.sha256       exact archive, binary and dictionary SHA256 values
+  ../stage/zr07-sizes.json   exact file bytes, archive sizes and install MiB
+  README                    exact Mac/zsh SSH wrapper, manual test and recovery
+
+Runtime binary: 6645540 bytes
+Binary SHA256: 4d037283147b8d66f3bbe186ee30bb2569e436a5214f4d7500a903fc265e3418
+WordNet unchanged: 14449559 bytes (13.78 MiB), licences retained.
+Thumbs grow lazily up to 10 MiB, not shipped. No additional large data payload.
+
+UNVERIFIED / manual test required before depending on sleep
+- No Kindle/Mac access, deployment, physical timing or end-to-end firmware test
+  was performed. Actual light/warmth curves and persistence, raw power grab vs
+  powerd's event source, event timing/order, panel cover retention, wake/GC16,
+  battery drain, Hall sensor, passcode and long hibernation need hardware checks.
+- A 175 MiB scanned PDF can still exceed thumbnail-child memory/deadline and
+  deliberately get a placeholder. Input remains independent. Main book-open /
+  page-render costs remain as in v0.6, not newly benchmarked.
+- Stock passcode is NOT disabled or altered. Do not opt into sleep with it on
+  until tested; KOReader documents passcodes can suppress outOfScreenSaver.
+- Idle timeout still exits; no auto-suspend/background battery monitor added.
+- Existing v0.6 limitations persist: no pinch/OCR, English dictionary/keyboard,
+  bounded EPUB anchors, legacy same-basename annotations. Source PDF malformed
+  J/E drop caps remain source-faithful, not invented layout corrections.
+
+Emergency (after approved manual install; no commands were run on a device):
+  sh /mnt/us/zreader/zreader-maintenance.sh restore-ui
+  If genuinely suspended, power once first to regain SSH. Full SSH commands and
+  isolated reader-option reset are in README. Never edit system files to recover.

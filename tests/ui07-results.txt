@@ -1,0 +1,5 @@
+PASS simulated goingToScreenSaver and CLI-error event fails safe, wakes, persists sleep OFF
+PASS 85-book real UI: covers, relative folders/filter, persisted title/progress sorts, progress bars; synthetic 175 MiB PDF cover 0.004s on box
+PASS real touch sliders/buttons 0..24; no startup write; no dark mode path
+PASS opt-in persistence/default OFF, pre-suspend cover completion, sleeping touch ignored, power wake and GC16 restore (SIMULATED, not firmware)
+PASS byte-identical page restored on wake; shots 70-83 plus PNG previews

@@ -1,0 +1,13 @@
+wait 1000
+long 288 548 300 585
+wait 200
+shot handles-before
+swipe 253 588 329 588
+wait 200
+shot handles-start
+swipe 318 626 276 626
+wait 200
+shot handles-end
+popup 1
+wait 200
+quit

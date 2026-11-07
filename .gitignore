@@ -1,0 +1,19 @@
+# Build outputs and personal reading data
+out/
+.zig-cache/
+zig-out/
+*.core
+*.log
+__pycache__/
+state/
+notes/
+export/
+thumbs/
+last_book
+settings.json
+ui07.json
+maintenance/
+# Do not add personal books, captures or machine configuration.
+
+.validation/
+tests/run-*/

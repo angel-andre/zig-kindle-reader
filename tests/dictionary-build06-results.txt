@@ -1,0 +1,3 @@
+WordNet 3.0: 147,306 keys, 117,036 shared glosses; 14,449,559 bytes (13.78 MiB)
+source sha256 658b1ba191f5f98c2e9bae3e25c186013158f30ef779f191d2a44e5d25046dc8
+output sha256 d2db381060fab8254f1b68551ffa1ec6d533c4662f22a2bb343abfd4b16a297b

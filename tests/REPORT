@@ -1,0 +1,85 @@
+zreader 0.5.0 annotation-fix candidate
+
+Status
+  Built locally. Not deployed, posted, published or connected to Amazon.
+  The drop-cap source-layout correction remains unresolved. Do not describe
+  this candidate as completing all three requested fixes.
+
+PDF root cause (confirmed, not a font/crop hypothesis)
+  Supplied file: digital-small1, 332 physical PDF pages, 612 x 792 pt.
+  Title metadata: digital-small1.
+  Creator/Producer: calibre 2.26.0. Its input format is not recorded.
+  All three fonts are embedded subsets of Times New Roman (regular/bold/italic).
+  PDF is fixed-layout (pdf=true, reflow=false), not an EPUB being reflowed.
+  Physical page 17: JENNIFER / Luve, Swaziland, Present Day.
+  Physical page 19: EDWARD / Hampshire, England, Present Day.
+  On p17 the large J's extracted bbox is [5,153.657,24.831,200.016].
+  ENNIFER's bbox is [5,175.954,52.234,186.180]. They intersect in the source.
+  On p19 E is [5,153.657,36.148,200.016]; DWARD is
+  [5,175.954,46.105,186.180]. These also intersect before scaling.
+  The source paints the initial before the page number, chapter heading and
+  location. No indent is reserved. The source trace records the J as a
+  68-unit glyph under a .75 scale (51 pt), at the same x=5 as body text.
+  Independent mutool 1.28.6 at 200 DPI AND Poppler reproduce the collision.
+  Device-resolution v0.4/v0.5 render-path PNGs are pixel-identical for both pages.
+  Therefore neither font substitution, trim, screen transform, EPUB CSS nor
+  reader reflow caused this visual error. The PDF's conversion layout is broken.
+  EPUB origin is plausible from calibre metadata, but cannot be proved from it.
+  Do not silently shift or squeeze text to fake a missing publisher layout.
+  A correct original EPUB/PDF is needed for a source-faithful layout correction.
+  The 21_* "after" PNGs intentionally show the still-broken source geometry.
+
+Selection and annotations
+  Strict word hit testing; whitespace is not treated as a remote nearest word.
+  Bounded drag snapping. Visible slot page/generation gates hit testing.
+  The exact stored render matrix maps crop offsets, scale and letterboxing.
+  Long press uses the current stationary finger location. Drag selects complete
+  words in forward/backward reading order on the current page only.
+  Live DU feedback (black outlines visible in binary mode), REAGL on release.
+  Two draggable handles; touch-to-word offsets prevent jumping when grabbed.
+  Nearest-centre hit choice fixes overlapping hit regions on wrapped selections.
+  Slot-0 Protocol B tracking prevents another finger changing selection.
+  In extraction only, an isolated colliding initial is joined to its body word.
+  This fixes selecting headings/location between the initial and body text.
+  PDF drawing commands are not changed. PDF never receives user CSS.
+  Tapping a mark opens Delete / Change style / Copy to notes / Cancel.
+  Notes-list long press deletes. JSON and TXT are both rewritten after all edits.
+  Legacy notes without timestamps work. Same-line quads are consolidated to
+  avoid doubled underline baselines.
+
+Evidence for the reported x=5 quads
+  x=5 is the actual left margin in this PDF, NOT evidence of a coordinate bug.
+  Full physical input simulation at screen (288,548) through (300,585) selects:
+  could think to say at that exact moment was this: “If Edgar Allan Mitchell—the
+  sixth man to walk on the
+  and saves exactly the two source rectangles in the reported legacy note.
+
+Verification
+  Seven production-code Zig tests, including 4,770 exact word-centre hits on
+  physical pages 7/17/19/39 with trim on and off; exact expected passages;
+  forward/reverse cross-line drag; both handles; nearby handle hit targets;
+  legacy annotation edit/copy/delete/reload and JSON/TXT consistency;
+  duplicate underlines; source-initial reading order; touch endpoints.
+  Black-box integration checks: evdev event stream selection, handle adjustment,
+  reversed drag, edit/change/copy/delete, 3 cached page turns, Contents/Notes,
+  EPUB reflow/text-size/page turn, static ELF targets, and PNG evidence.
+  Exact results are in results.txt and integration-results.txt.
+  No pre-existing automated test runner was present in the provided source tree.
+  GNU shell syntax checks pass for the launcher, KUAL and build/test scripts.
+  ARM ELF32 machine 40, EABI5 hard-float, e_flags 0x05000400, no PT_INTERP.
+  Host ELF64 x86_64 is static too. No hardware run or new latency claim.
+
+Preserved
+  Default REAGL; directional prefetch; two workers; fourteen pixel cache slots;
+  MuPDF per-context display-list cache; governor behaviour; no Amazon access.
+  Launcher pause loop is exactly: for p in awesome volumd blanket Xorg; do
+
+Reproduction
+  Keep ../testbooks/digital-small1.pdf locally (not part of the shared source).
+  ./build.sh
+  ./tests/run.sh
+  python3 tests/verify.py
+  Reference mutool can be built with ./tests/build-tools.sh and run as:
+    ../mupdf-1.28.6-source/build/hostmusl-release/mutool draw -r 200 \
+      -o shots/reference-mutool-%d.png ../testbooks/digital-small1.pdf 17,19
+  Pillow is required for PNG previews. Zig 0.17.1 and MuPDF 1.28.6 are used.
