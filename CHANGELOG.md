@@ -2,6 +2,10 @@
 
 Earlier versions were early prototypes and are not listed.
 
+## 0.10.5
+
+Faster turns through heavy scanned pages: when the page you turn to is a heavy colour picture page, it is shown at once as a draft and the exact page replaces it with a non-flashing update, as for the first page in 0.10.4. The page you are waiting for now always comes before pre-rendering: if both background workers are busy with other pages, one of them is stopped and restarted later. Final pages are byte-identical and there are no extra flashes. Kindle, scan-C, cold open: average of the first 8 pages 2.29 s → 0.53 s (slowest 8.2 s → 0.78 s), turn p90 496 → 134 ms, slowest turn 3.67 → 2.76 s; warm turns unchanged (about 11 ms).
+
 ## 0.10.4
 
 Fast first page on scanned PDFs: opening a scanned book whose first page is a colour picture page (typically an Internet Archive cover) took 5.9 s (scan-B) and 13.0 s (scan-C) on the Kindle before anything appeared; it now appears in 0.67 s and 0.65 s. Cause: such a page holds full-resolution JPEG 2000 colour layers that were decoded at full size twice (once for the margin trim, once for the screen), every JPEG 2000 decode in the reader waited on one global lock, and the background page workers queued behind it. Now the first page is shown at once as a draft (half resolution, large images decoded at reduced resolution), and the exact page replaces it with a non-flashing update about 4–6 s later; the final page is byte-identical to 0.10.3 and there is no extra flash. Two small MuPDF patches (`mupdf-patches/06`, `07`) let JPEG 2000 images decode in parallel on both cores and reuse one full-size decode for both scales; output is unchanged. Reopening an EPUB at a saved place without a cached layout now lays out only the chapters up to that place and counts the rest in the background (book-E, 613 pages: 3.2 s → 1.5 s to open at the middle). On-device benchmark in `tools/bench/` (runs headless over SSH, keeps powerd awake and the governor as the reader sets it, restores both); reports in `benchmarks/2026-11-07/`. MuPDF built with -O2 was pixel-identical but not faster on the device, so the release build stays at -Os.

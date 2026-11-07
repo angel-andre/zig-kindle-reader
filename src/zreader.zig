@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.10.4";
+const VERSION = "0.10.5";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 // v0.10.0 second book font (OFL, Latin subset) and compact Latin hyphenation patterns (MIT).
 const sans_bold = @embedFile("fonts/NotoSans-Bold-Latin.ttf");
@@ -929,6 +929,9 @@ const Pool = struct {
     render_us: Stats = .{},
     errors: u32 = 0,
     docs: [2]?*ZrDoc = .{ null, null },
+    // v0.10.5: page each worker is rendering (-1 idle) and whether it was preempted.
+    job_p: [2]i32 = .{ -1, -1 },
+    preempted: [2]bool = .{ false, false },
 };
 var pool: Pool = .{};
 
@@ -1239,7 +1242,22 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
         }
         const ni: c_int = @intFromBool(pool.no_images);
         zr_reset_cancel(doc);
+        const wi = @min(doc_index, pool.job_p.len - 1);
+        pool.job_p[wi] = job.p;
+        pool.preempted[wi] = false;
+        // v0.10.5: the page the user is waiting for, if heavy, is drawn as a draft first.
+        const waiting = job.p == pool.cur and job.step == pool.step and mode == .page and book.is_pdf and draft_slot == null and !pool.no_images and !pool.slots[job.s].draft;
+        const my_gen_draft = pool.gen;
         _ = pthread_mutex_unlock(&pool.mtx);
+
+        if (waiting and workerDraft(doc, job, my_gen_draft)) {
+            _ = pthread_mutex_lock(&pool.mtx);
+            pool.busy -= 1;
+            pool.job_p[wi] = -1;
+            _ = pthread_cond_broadcast(&pool.cond);
+            _ = linux.write(pool.pipe_w, "r", 1);
+            continue;
+        }
 
         const t0 = nowUs();
         var rc: c_int = 0;
@@ -1254,6 +1272,18 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
         const dt = nowUs() - t0;
 
         _ = pthread_mutex_lock(&pool.mtx);
+        pool.job_p[wi] = -1;
+        if (pool.preempted[wi]) {
+            // Aborted for the page the user is waiting for: nothing is kept.
+            pool.preempted[wi] = false;
+            slot.state = .empty;
+            slot.page = -1;
+            pool.busy -= 1;
+            logf("prerender of page {d} preempted for page {d}", .{ job.p + 1, pool.cur + 1 });
+            _ = pthread_cond_broadcast(&pool.cond);
+            _ = linux.write(pool.pipe_w, "r", 1);
+            continue;
+        }
         if (use_trim and !have_trim and rc == 0 and job.p < pool.trims.len) pool.trims[@intCast(job.p)] = .{ .done = true, .r = r };
         slot.m = m;
         slot.geometry = geometry;
@@ -1821,8 +1851,11 @@ fn upscale2(src: []const u8, sw: usize, sh: usize, dst: []u8, dw: usize, dh: usi
 // Main thread: once the exact page is ready, it replaces the draft on screen
 // with a REAGL (non-flashing) update; the draft slot is released.
 fn refineDraft() void {
-    const di = draft_slot orelse return;
     _ = pthread_mutex_lock(&pool.mtx);
+    const di = draft_slot orelse {
+        _ = pthread_mutex_unlock(&pool.mtx);
+        return;
+    };
     const d = &pool.slots[di];
     var show = false;
     var final: ?usize = null;
@@ -1851,6 +1884,54 @@ fn refineDraft() void {
     if (show and screen == .reader and !need_page) {
         markFull(WF_REAGL);
         logf("open profile: draft replaced by the exact page (REAGL, no flash) after {d}us", .{nowUs() - pc_open_us});
+    }
+}
+// v0.10.5: worker-side draft of the page the user is waiting for (same draft as
+// the first page: untrimmed bounds, half resolution, big JPEG 2000 reduced).
+fn workerDraft(doc: *ZrDoc, job: Job, gen: u32) bool {
+    if (zr_draft_wanted(doc, job.p, imageFlags(), @intCast(W), @intCast(H)) == 0) return false;
+    const hw = W / 2;
+    const hh = H / 2;
+    const half = alloc.alloc(u8, hw * hh) catch return false;
+    defer alloc.free(half);
+    var r: [4]f32 = .{ 0, 0, 612, 792 };
+    if (zr_page_bounds(doc, job.p, &r) != 0) return false;
+    const geometry = viewGeometry(r, .page, false, 0, 0, 0);
+    var hm = geometry.m;
+    for (&hm) |*v| v.* *= 0.5;
+    var rs: ZrRenderStats = .{};
+    if (zr_render_with_stats(doc, job.p, &hm, half.ptr, @intCast(hw), @intCast(hh), @intCast(hw), 0, imageFlags() | 4, &rs) != 0 or rs.drafted == 0) return false;
+    const slot = &pool.slots[job.s];
+    upscale2(half, hw, hh, slot.buf, W, H, STRIDE);
+    const metrics = pageMetrics(slot.buf, W, H, STRIDE, rs.image_coverage);
+    _ = pthread_mutex_lock(&pool.mtx);
+    defer _ = pthread_mutex_unlock(&pool.mtx);
+    if (pool.gen != gen or pool.base_width or draft_slot != null) {
+        slot.state = .empty;
+        slot.page = -1;
+        return true; // slot released; the exact job is picked again
+    }
+    slot.geometry = geometry;
+    slot.m = geometry.m;
+    slot.metrics = metrics;
+    slot.state = .ready;
+    slot.draft = true;
+    draft_slot = job.s;
+    logf("page {d} drawn as a draft while the exact page renders", .{job.p + 1});
+    return true;
+}
+// v0.10.5 (pool.mtx held): when the current page has no exact slot and every worker
+// is busy prerendering other pages, abort one of those renders (MuPDF cookie).
+fn preemptForCurrent() void {
+    const key = ViewKey{ .p = pool.cur, .step = pool.step };
+    if (keyCovered(key)) return;
+    for (pool.job_p) |p| if (p < 0) return; // a worker is free
+    for (pool.job_p, 0..) |p, i| {
+        if (p != pool.cur and !pool.preempted[i]) if (pool.docs[i]) |d| {
+            pool.preempted[i] = true;
+            zr_cancel(d);
+            return;
+        };
     }
 }
 fn renderFirstRaster(doc: *ZrDoc) void {
@@ -3326,6 +3407,7 @@ fn drawReader() bool {
     _ = pthread_mutex_lock(&pool.mtx);
     if (book.reflow) zr_page_count_hint(book.doc, pool.npages);
     if (pool.paginating and slotFor(pool.cur) == null) renderFirstRaster(book.doc);
+    if (book.is_pdf) preemptForCurrent();
     var ok = false;
     if (slotFor(pool.cur)) |i| {
         const s = &pool.slots[i];
