@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.10.1";
+const VERSION = "0.10.3";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 // v0.10.0 second book font (OFL, Latin subset) and compact Latin hyphenation patterns (MIT).
 const sans_bold = @embedFile("fonts/NotoSans-Bold-Latin.ttf");
@@ -19,6 +19,10 @@ const ZrWord = extern struct { x0: f32, y0: f32, x1: f32, y1: f32, line: c_int, 
 const ZrToc = extern struct { page: c_int, level: c_int, off: c_int, len: c_int };
 extern fn zrd_open(path: [*:0]const u8) c_int;
 extern fn zrd_close() void;
+extern fn zrl_open(path: [*:0]const u8) c_int;
+extern fn zrl_close() void;
+extern fn zrl_define(word: [*]const u8, len: c_int, lemma: [*]u8, lemma_cap: c_int, out: [*]u8, cap: c_int) c_int;
+extern fn zr_book_language(path: [*:0]const u8, out: [*]u8, cap: c_int) c_int;
 extern fn zrd_define(word: [*]const u8, len: c_int, lemma: [*]u8, lemma_cap: c_int, out: [*]u8, cap: c_int) c_int;
 extern fn zr_open(path: [*:0]const u8, lw: f32, lh: f32, font: f32, margin: f32) ?*ZrDoc;
 extern fn zr_open_style(path: [*:0]const u8, lw: f32, lh: f32, font: f32, margin: f32, spacing: f32) ?*ZrDoc;
@@ -60,6 +64,7 @@ extern fn zr_reset_cancel(z: *ZrDoc) void;
 extern fn zr_close(z: *ZrDoc) void;
 extern fn zr_page_count(z: *ZrDoc) c_int;
 extern fn zr_is_pdf(z: *ZrDoc) c_int;
+extern fn zr_drm_check(path: [*:0]const u8) c_int;
 extern fn zr_reflowable(z: *ZrDoc) c_int;
 const Anchor = extern struct { chapter: c_int = -1, start: u32 = 0, end: u32 = 0, hash: u64 = 0 };
 extern fn zr_set_spacing(z: *ZrDoc, spacing: f32) void;
@@ -510,6 +515,7 @@ const Opts = struct {
     data: []const u8 = "/mnt/us/zreader",
     books: []const u8 = "/mnt/us/Books",
     dictionary: ?[*:0]const u8 = null,
+    latin_dictionary: ?[*:0]const u8 = null,
     log: ?[*:0]const u8 = null,
     idle_min: u64 = 10,
     page_cache_mib: u64 = 20,
@@ -1766,7 +1772,19 @@ fn noteSlowPage(dt: u64) void { // called with pool.mtx held
             logf("slow pages: {s} avg={d}ms max={d}ms over {d} renders, clean_scans={} book='{s}'", .{ if (avg > SLOW_PAGE_US) "SLOW" else "ok", avg / 1000, slow_max / 1000, slow_n, opts.clean_scans, book.pathS() });
     }
 }
+var open_drm = false;
 fn openBook(path: []const u8) bool {
+    open_drm = false;
+    {
+        var dz: [1200]u8 = undefined;
+        if (std.fmt.bufPrintSentinel(&dz, "{s}", .{path}, 0)) |zp| {
+            if (zr_drm_check(zp) != 0) {
+                logf("drm: {s} is DRM-protected; not opened", .{path});
+                open_drm = true;
+                return false;
+            }
+        } else |_| {}
+    }
     const request_start = nowUs();
     closeBook();
     _ = pthread_mutex_lock(&pool.mtx);
@@ -1925,6 +1943,12 @@ fn loadToc() void {
     book.ntoc = @intCast(@max(n, 0));
     book.toc_loaded = true;
     book.toc_real = book.ntoc > 0;
+    // v0.10.2: MOBI/AZW3/FB2/TXT outlines come from headings in the HTML and are
+    // often a single "Table of Contents" entry; fewer than 3 entries -> detect.
+    if (book.reflow and book.ntoc < 3 and (bookKind(book.pathS()) orelse 0) >= 2) {
+        book.ntoc = 0;
+        book.toc_real = false;
+    }
     book.toc_detected = false;
     if (!book.toc_real) loadDetectedToc();
 }
@@ -2260,7 +2284,7 @@ fn drawUpload() void {
     const addr = if (!up_ok) "Could not start (port busy?)" else if (up_addr_len == 0) "Not connected to Wi-Fi" else std.fmt.bufPrint(&b, "http://{s}:{d}", .{ up_addr[0..up_addr_len], opts.upload_port }) catch "";
     textCenter(SANS, 56, .{ .x = 0, .y = 470, .w = @intCast(W), .h = 120 }, addr, 0);
     var l: [128]u8 = undefined;
-    text(SANS, 28, 70, 700, std.fmt.bufPrint(&l, "PDF and EPUB only, up to {d} MB per file.", .{opts.upload_max_mib}) catch "", 0x55);
+    text(SANS, 28, 70, 700, std.fmt.bufPrint(&l, "PDF, EPUB, MOBI, AZW3, TXT, CBZ or FB2, up to {d} MB per file.", .{opts.upload_max_mib}) catch "", 0x55);
     text(SANS, 28, 70, 750, std.fmt.bufPrint(&l, "Uploads are refused if less than {d} GB would stay free.", .{opts.upload_min_free_mib / 1024}) catch "", 0x55);
     text(SANS, 28, 70, 800, "The upload page stops as soon as you leave this screen.", 0x55);
     text(SANS, 28, 70, 850, "The same page offers your highlights and notes to download.", 0x55);
@@ -2451,7 +2475,18 @@ fn tick07() void {
 }
 
 // ---------------- library ----------------
-const Entry = struct { path: []u8, title: []const u8, folder: []const u8, opened: i64, progress: i32, bytes: u64 = 0, epub: bool = false, fav: bool = false, cmask: u64 = 0 };
+// v0.10.2: book file types in the library (index = Entry.kind).
+const BOOK_EXTS = [_][]const u8{ ".pdf", ".epub", ".mobi", ".azw3", ".azw", ".txt", ".cbz", ".fb2" };
+const BOOK_LABELS = [_][]const u8{ "PDF", "EPUB", "MOBI", "AZW3", "AZW", "TXT", "CBZ", "FB2" };
+fn bookKind(name: []const u8) ?u8 {
+    for (BOOK_EXTS, 0..) |e, i| if (std.ascii.endsWithIgnoreCase(name, e)) return @intCast(i);
+    return null;
+}
+fn entryLabel(e: Entry) []const u8 {
+    if (e.kind == 0) return if (e.epub) "EPUB" else "PDF";
+    return BOOK_LABELS[e.kind];
+}
+const Entry = struct { path: []u8, title: []const u8, folder: []const u8, opened: i64, progress: i32, bytes: u64 = 0, epub: bool = false, kind: u8 = 0, fav: bool = false, cmask: u64 = 0 };
 var books_bytes: u64 = 0;
 var storage_free: u64 = 0;
 var storage_total: u64 = 0;
@@ -2483,8 +2518,8 @@ fn scanDir(path: []const u8, depth: u32) void {
                 scanDir(full, depth + 1);
                 continue;
             }
-            const ok = std.ascii.endsWithIgnoreCase(name, ".pdf") or std.ascii.endsWithIgnoreCase(name, ".epub");
-            if (!ok or dtype == 10 or nlib >= lib.len) continue;
+            const kind = bookKind(name) orelse continue;
+            if (dtype == 10 or nlib >= lib.len) continue;
             const p = alloc.dupe(u8, full) catch continue;
             const base = p[p.len - name.len ..];
             const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse base.len;
@@ -2495,7 +2530,7 @@ fn scanDir(path: []const u8, depth: u32) void {
             const bytes = zr_file_size(fz);
             books_bytes += bytes;
             const st = loadState(p);
-            lib[nlib] = .{ .bytes = bytes, .epub = std.ascii.endsWithIgnoreCase(name, ".epub"), .path = p, .title = base[0..dot], .folder = folder, .opened = st.opened, .progress = if (st.pages > 0) @intCast(std.math.clamp(@divTrunc((@as(i64, st.page) + 1) * 100, st.pages), 0, 100)) else -1 };
+            lib[nlib] = .{ .bytes = bytes, .epub = kind == 1, .kind = if (kind <= 1) 0 else kind, .path = p, .title = base[0..dot], .folder = folder, .opened = st.opened, .progress = if (st.pages > 0) @intCast(std.math.clamp(@divTrunc((@as(i64, st.page) + 1) * 100, st.pages), 0, 100)) else -1 };
             nlib += 1;
         }
     }
@@ -2822,6 +2857,61 @@ var definition_page: usize = 0;
 fn definitionRect() Rect {
     return .{ .x = 40, .y = 180, .w = @as(i32, @intCast(W)) - 80, .h = @as(i32, @intCast(H)) - 220 };
 }
+// v0.10.3: optional Latin dictionary (Whitaker's Words) with an EN / LA toggle in the popup.
+var latin_tried = false;
+var latin_ready = false;
+var definition_latin = false;
+var definition_word: [256]u8 = undefined;
+var definition_word_len: usize = 0;
+var book_lang_path: [1200]u8 = undefined;
+var book_lang_path_len: usize = 0;
+var book_lang: [8]u8 = undefined;
+var book_lang_len: usize = 0;
+fn definitionLang(latin: bool) Rect {
+    return .{ .x = @as(i32, @intCast(W)) - (if (latin) @as(i32, 400) else 520), .y = 200, .w = 110, .h = 80 };
+}
+fn bookIsLatin() bool {
+    const p = book.pathS();
+    if (p.len == 0) return false;
+    if (!(book_lang_path_len == p.len and std.mem.eql(u8, book_lang_path[0..p.len], p))) {
+        book_lang_len = 0;
+        var z: [1200]u8 = undefined;
+        if (std.fmt.bufPrintSentinel(&z, "{s}", .{p}, 0)) |zp| {
+            const n = zr_book_language(zp, &book_lang, @intCast(book_lang.len));
+            if (n > 0) book_lang_len = @intCast(n);
+        } else |_| {}
+        if (p.len <= book_lang_path.len) {
+            @memcpy(book_lang_path[0..p.len], p);
+            book_lang_path_len = p.len;
+        }
+        logf("dictionary: book language '{s}'", .{book_lang[0..book_lang_len]});
+    }
+    const l = book_lang[0..book_lang_len];
+    return std.mem.eql(u8, l, "la") or std.mem.eql(u8, l, "lat");
+}
+fn lookupWord(word: []const u8, latin: bool) c_int {
+    if (latin) {
+        if (!latin_ready) return -1;
+        return zrl_define(word.ptr, @intCast(word.len), &definition_title, @intCast(definition_title.len), &definition, @intCast(definition.len));
+    }
+    return if (dictionary_ready) zrd_define(word.ptr, @intCast(word.len), &definition_title, @intCast(definition_title.len), &definition, @intCast(definition.len)) else -1;
+}
+fn showDefinition(word: []const u8, latin: bool, length: c_int) void {
+    definition_latin = latin;
+    definition_title_len = if (length > 0) std.mem.indexOfScalar(u8, &definition_title, 0) orelse 127 else 0;
+    if (length <= 0) {
+        const n = @min(word.len, definition_title.len);
+        @memcpy(definition_title[0..n], word[0..n]);
+        definition_title_len = n;
+        const message = if (latin)
+            (if (length < 0) "Latin dictionary unavailable. Install dictionary/latin.zdict and restart zreader. No network is used." else "No entry found in the offline Latin dictionary. Tap EN for English, or try another form of the word.")
+        else if (length < 0) "Dictionary unavailable. Install dictionary/wordnet.zdict and restart zreader. No network is used." else "No definition found in the offline English dictionary. Try a different word; names and specialist terms may not be included.";
+        @memcpy(definition[0..message.len], message);
+        definition_len = message.len;
+    } else definition_len = @intCast(length);
+    definition_page = 0;
+    wrapDefinition();
+}
 fn definitionClose() Rect {
     return .{ .x = @as(i32, @intCast(W)) - 280, .y = 200, .w = 200, .h = 80 };
 }
@@ -2869,34 +2959,46 @@ fn defineSelection() void {
         if (std.fmt.bufPrintSentinel(&z, "{s}", .{p}, 0)) |zp| dictionary_ready = zrd_open(zp) != 0 else |_| {}
         dictionary_tried = true;
     }
+    if (!latin_tried) {
+        var path: [1400]u8 = undefined;
+        const p = if (opts.latin_dictionary) |explicit| std.mem.span(explicit) else std.fmt.bufPrint(&path, "{s}/dictionary/latin.zdict", .{opts.data}) catch "";
+        var z: [1400]u8 = undefined;
+        if (std.fmt.bufPrintSentinel(&z, "{s}", .{p}, 0)) |zp| latin_ready = zrl_open(zp) != 0 else |_| {}
+        latin_tried = true;
+    }
     var selected: [8192]u8 = undefined;
     const word = selectionText(&selected);
-    const length = if (dictionary_ready) zrd_define(word.ptr, @intCast(word.len), &definition_title, @intCast(definition_title.len), &definition, @intCast(definition.len)) else -1;
-    definition_title_len = if (length > 0) std.mem.indexOfScalar(u8, &definition_title, 0) orelse 127 else 0;
-    if (length <= 0) {
-        const n = @min(word.len, definition_title.len);
-        @memcpy(definition_title[0..n], word[0..n]);
-        definition_title_len = n;
-        const message = if (length < 0) "Dictionary unavailable. Install dictionary/wordnet.zdict and restart zreader. No network is used." else "No definition found in the offline English dictionary. Try a different word; names and specialist terms may not be included.";
-        @memcpy(definition[0..message.len], message);
-        definition_len = message.len;
-    } else definition_len = @intCast(length);
-    definition_page = 0;
-    wrapDefinition();
+    definition_word_len = @min(word.len, definition_word.len);
+    @memcpy(definition_word[0..definition_word_len], word[0..definition_word_len]);
+    // Latin first in a Latin book; otherwise English, then Latin when English has no entry.
+    var latin = latin_ready and bookIsLatin();
+    var length = lookupWord(word, latin);
+    if (length <= 0 and latin_ready) {
+        const other = lookupWord(word, !latin);
+        if (other > 0) {
+            latin = !latin;
+            length = other;
+        } else length = lookupWord(word, latin);
+    }
+    showDefinition(word, latin, length);
     dictionary_open = true;
     popup_open = false;
     sel_active = false;
     center_pending = false;
     editing_note = null;
-    logf("dictionary: {s}, result={d}, lines={d}", .{ definition_title[0..definition_title_len], length, definition_nlines });
+    logf("dictionary: {s}, result={d}, lines={d}{s}", .{ definition_title[0..definition_title_len], length, definition_nlines, if (latin) " (latin)" else "" });
     closeOverlayRefresh(Rect.full());
 }
 fn drawDefinition() void {
     const r = definitionRect();
     fill(r.grow(8), 0xFF);
     frame(r, 4, 0);
-    textFit(SERIF_BOLD, 44, @floatFromInt(r.x + 35), @floatFromInt(r.y + 80), definition_title[0..definition_title_len], @floatFromInt(r.w - 320), 0);
+    textFit(SERIF_BOLD, 44, @floatFromInt(r.x + 35), @floatFromInt(r.y + 80), definition_title[0..definition_title_len], @floatFromInt(r.w - (if (latin_ready) @as(i32, 560) else 320)), 0);
     button(definitionClose(), "Close", false);
+    if (latin_ready) {
+        button(definitionLang(false), "EN", !definition_latin);
+        button(definitionLang(true), "LA", definition_latin);
+    }
     const per = definitionPerPage();
     var i: usize = 0;
     while (i < per) : (i += 1) {
@@ -2905,7 +3007,7 @@ fn drawDefinition() void {
         const line = definition_lines[k];
         text(SANS, 32, @floatFromInt(r.x + 40), @floatFromInt(r.y + 160 + @as(i32, @intCast(i)) * 44), definition[line.off..][0..line.len], 0);
     }
-    text(SANS, 24, @floatFromInt(r.x + 35), @floatFromInt(r.y + r.h - 140), "WordNet 3.0 / English / offline", 0x55);
+    text(SANS, 24, @floatFromInt(r.x + 35), @floatFromInt(r.y + r.h - 140), if (definition_latin) "Whitaker's Words / Latin / offline" else "WordNet 3.0 / English / offline", 0x55);
     if (definition_page > 0) button(definitionNav(false), "Previous", false);
     if ((definition_page + 1) * per < definition_nlines) button(definitionNav(true), "Next", false);
     var b: [48]u8 = undefined;
@@ -2916,6 +3018,15 @@ fn definitionTap(x: i32, y: i32) void {
     if (definitionClose().contains(x, y)) {
         dictionary_open = false;
         return closeOverlayRefresh(Rect.full());
+    }
+    if (latin_ready) {
+        const to_latin = definitionLang(true).contains(x, y);
+        if ((to_latin or definitionLang(false).contains(x, y)) and to_latin != definition_latin) {
+            const word = definition_word[0..definition_word_len];
+            showDefinition(word, to_latin, lookupWord(word, to_latin));
+            logf("dictionary: switched to {s}: {s}, lines={d}", .{ if (to_latin) "latin" else "english", definition_title[0..definition_title_len], definition_nlines });
+            return markDirty(definitionRect().grow(8), WF_REAGL);
+        }
     }
     if (definitionNav(false).contains(x, y) and definition_page > 0) {
         definition_page -= 1;
@@ -3044,7 +3155,7 @@ fn drawToast() void {
     if (toast_len == 0) return;
     const r = toastRect();
     fill(r, 0x00);
-    textCenter(SANS, 34, r, toast_buf[0..toast_len], 0xFF);
+    textCenter(SANS, if (toast_len > 44) 29 else 34, r, toast_buf[0..toast_len], 0xFF); // v0.10.2: long messages fit the box
 }
 
 fn formatBytes(value: u64, buf: []u8) []const u8 {
@@ -3350,7 +3461,7 @@ fn drawLibrary() void {
     button(libraryControl(2), "Settings", false);
     const total = libraryCount();
     const per = rowsPerPage();
-    if (total == 0) text(SANS, 34, 70, 410, "No PDF or EPUB books here.", 0x55);
+    if (total == 0) text(SANS, 34, 70, 410, "No books here (PDF, EPUB, MOBI, AZW3, TXT, CBZ, FB2).", 0x55);
     for (0..per) |i| {
         const k = list_page * per + i;
         if (k >= total) break;
@@ -3366,14 +3477,14 @@ fn drawLibrary() void {
             const e = lib[lib_visible[k]];
             if (!drawThumb(e.path, .{ .x = r.x, .y = r.y + 8, .w = 96, .h = 128 })) {
                 frame(.{ .x = r.x, .y = r.y + 8, .w = 96, .h = 128 }, 2, 0xAA);
-                textCenter(SANS, 20, .{ .x = r.x, .y = r.y + 8, .w = 96, .h = 128 }, if (e.epub) "EPUB" else "PDF", 0x55);
+                textCenter(SANS, 20, .{ .x = r.x, .y = r.y + 8, .w = 96, .h = 128 }, entryLabel(e), 0x55);
             }
             if (e.fav) fillStar(r.x + 142, r.y + 42, 17, 0x00);
             const tx: i32 = if (e.fav) 170 else 125;
             textFit(SERIF, 38, @floatFromInt(r.x + tx), @floatFromInt(r.y + 55), e.title, @floatFromInt(r.w - tx), 0);
             var subbuf: [1200]u8 = undefined;
             var sizebuf: [32]u8 = undefined;
-            const sub = std.fmt.bufPrint(&subbuf, "{s}  \xc2\xb7  {s}  \xc2\xb7  {s}", .{ if (e.epub) "EPUB" else "PDF", formatBytes(e.bytes, &sizebuf), e.folder }) catch "";
+            const sub = std.fmt.bufPrint(&subbuf, "{s}  \xc2\xb7  {s}  \xc2\xb7  {s}", .{ entryLabel(e), formatBytes(e.bytes, &sizebuf), e.folder }) catch "";
             textFit(SANS, 25, @floatFromInt(r.x + 125), @floatFromInt(r.y + 92), sub, @floatFromInt(r.w - 240), 0x55);
             const track = Rect{ .x = r.x + 125, .y = r.y + 115, .w = r.w - 250, .h = 12 };
             fill(track, 0xDD);
@@ -4732,7 +4843,7 @@ fn openFromLibrary(i: usize) void {
     if (openBook(lib[i].path)) {
         first_clean = true;
         showScreen(.reader);
-    } else toast("Could not open this book", .{});
+    } else if (open_drm) toast("This book is DRM-protected and can't be opened", .{}) else toast("Could not open this book", .{});
 }
 
 fn listNav(x: i32, y: i32) bool {
@@ -5534,7 +5645,7 @@ fn onSignal(_: c_int) callconv(.c) void {
 fn usage() void {
     std.debug.print(
         \\zreader {s}
-        \\usage: zreader [options] [book.pdf|book.epub]     (no book: Library)
+        \\usage: zreader [options] [book.pdf|.epub|.mobi|.azw3|.txt|.cbz|.fb2]     (no book: Library)
         \\  --wf reagl|gl16    page-turn waveform (default reagl; gl16 is for testing)
         \\  --full-refresh off|4|8|16 periodic clean (default off)
         \\  --no-image-dither  disable image-only 16-level dithering
@@ -5543,6 +5654,7 @@ fn usage() void {
         \\  --no-images        experimental: skip drawing images
         \\  --debug            timing line in the menu
         \\  --dictionary FILE  offline dictionary (default DATA/dictionary/wordnet.zdict)
+        \\  --latin-dictionary FILE  offline Latin dictionary (default DATA/dictionary/latin.zdict)
         \\  --data DIR         state and notes (default /mnt/us/zreader)
         \\  --books DIR        library root (default /mnt/us/Books)
         \\  --log PATH         log file (default stderr)
@@ -5591,6 +5703,9 @@ fn parseArgs(argv: []const [*:0]const u8) bool {
         } else if (eql(a, "--dictionary") and has_next) {
             i += 1;
             opts.dictionary = argv[i];
+        } else if (eql(a, "--latin-dictionary") and has_next) {
+            i += 1;
+            opts.latin_dictionary = argv[i];
         } else if (eql(a, "--books") and has_next) {
             i += 1;
             opts.books = std.mem.span(argv[i]);
@@ -5750,7 +5865,10 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
         if (openBook(std.mem.span(b))) {
             screen = .reader;
             need_page = true;
-        } else libPageChange(WF_GC16);
+        } else {
+            libPageChange(WF_GC16);
+            if (open_drm) toast("This book is DRM-protected and can't be opened", .{});
+        }
     } else libPageChange(WF_GC16);
     if (opts.sim != null) _ = spawn(&sim_th, simThread);
 
@@ -5913,6 +6031,7 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
     closeBook();
     zr_pc_stop();
     zrd_close();
+    zrl_close();
     if (in.touch_fd >= 0 and opts.sim == null) {
         var zero: c_int = 0;
         if (in.grabbed) _ = linux.ioctl(in.touch_fd, EVIOCGRAB, @intFromPtr(&zero));

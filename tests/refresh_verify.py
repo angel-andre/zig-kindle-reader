@@ -62,6 +62,10 @@ tap 640 1640
 wait 150
 tap 640 1640
 wait 150
+tap 640 1640
+wait 150
+tap 640 1640
+wait 150
 shot 30_refresh_menu_off
 tap 640 850
 wait 150

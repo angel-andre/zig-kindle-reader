@@ -54,7 +54,7 @@ const char *zr_up_check_name(const char *raw,char *out,size_t cap){
  d[n]=0;if(!n||n>200)return "bad name length";
  for(size_t i=0;i<n;i++){unsigned char c=(unsigned char)d[i];if(c<0x20||c==0x7f||c=='/'||c=='\\'||c==':'||c=='*'||c=='?'||c=='"'||c=='<'||c=='>'||c=='|')return "name has forbidden characters";}
  if(d[0]=='.'||d[0]==' '||strstr(d,".."))return "name not allowed";
- const char *dot=strrchr(d,'.');if(!dot||(strcasecmp(dot,".pdf")&&strcasecmp(dot,".epub")))return "only .pdf and .epub files";
+ const char *dot=strrchr(d,'.');static const char *ok[]={".pdf",".epub",".mobi",".azw3",".txt",".cbz",".fb2",0};int good=0;if(dot)for(int i=0;ok[i];i++)if(!strcasecmp(dot,ok[i]))good=1;if(!good)return "only .pdf, .epub, .mobi, .azw3, .txt, .cbz and .fb2 files";
  if(dot==d)return "name not allowed";
  if(strlen(d)>=cap)return "bad name length";strcpy(out,d);return 0;}
 
@@ -98,7 +98,7 @@ uint64_t zr_up_free(const char *path){struct statvfs st;if(statvfs(path,&st))ret
 static const char PAGE[]="<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'><title>Zigg Reader upload</title>"
 "<style>body{font-family:sans-serif;max-width:32em;margin:2em auto;padding:0 1em}button,input{font-size:1.1em}</style></head><body>"
 "<h2>Send books to the Kindle</h2><p>PDF or EPUB only. Books go into the Books folder.</p>"
-"<input type=file id=f multiple accept='.pdf,.epub'><p><button onclick='go()'>Upload</button></p><pre id=s></pre>"
+"<input type=file id=f multiple accept='.pdf,.epub,.mobi,.azw3,.txt,.cbz,.fb2'><p><button onclick='go()'>Upload</button></p><pre id=s></pre>"
 "<script>async function go(){const s=document.getElementById('s');for(const f of document.getElementById('f').files){s.textContent+=f.name+': sending...\\n';"
 "try{const r=await fetch('/upload?name='+encodeURIComponent(f.name),{method:'POST',body:f});s.textContent+=f.name+': '+(await r.text())+'\\n';}catch(e){s.textContent+=f.name+': failed\\n';}}}</script>";
 

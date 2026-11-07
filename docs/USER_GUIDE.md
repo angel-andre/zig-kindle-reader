@@ -21,6 +21,16 @@ If a PDF or EPUB has no table of contents, the first time you open Contents the 
 - The Bookmarks screen lists bookmarks in page order with the page number, the date added and the first words of the page (blank for pages without a text layer, such as some scans). Tap an entry to jump to it; long-press to delete it.
 - Bookmarks are saved per book in `state/` on the Kindle (next to the reading position) and survive restarts and updates. EPUB bookmarks keep a text anchor, so they stay on the same passage after changing text size, margins or spacing. Nothing leaves the device.
 
+## Book formats (0.10.2)
+
+Besides PDF and EPUB, the reader opens DRM-free **MOBI**, **AZW3** (KF8), **TXT**, **CBZ** (comic archives of JPEG/PNG pages) and **FB2**. Put them in `/mnt/us/Books` or send them with Upload books over Wi-Fi. The library shows each book's type and size, and they work with sorting, collections, favourites, stats, bookmarks and Contents.
+
+- **MOBI, AZW3, FB2, TXT** are reflowed like EPUB: text size, margins, line spacing, Font and Align, hyphenation, highlights, notes, search and Look up all work. Chapters start on a new page. If the book has no useful table of contents, Contents finds the chapters (0.10.1).
+- **TXT** becomes paragraphs (separated by blank lines, or one per line), and lines like “CHAPTER I.”, “Book II” or “Preface” become headings.
+- **CBZ** pages are pictures, fitted to the screen; there is no text to select.
+- **DRM.** Kindle-store books with DRM (MOBI/AZW/AZW3), Amazon KFX files and encrypted EPUBs can't be read. Opening one shows “This book is DRM-protected and can't be opened”; nothing else happens. A damaged file shows “Could not open this book”.
+- Not supported: CBR (RAR comics) and KFX. Links inside AZW3 books aren't followed yet.
+
 ## PDFs and EPUBs
 
 PDF views: fit page, cropped fit width, 1.5× and 2×. Fit-width navigation steps by a screen minus a 96-pixel overlap. Drag once to pan; the pan applies on release. There is no pinch gesture. Trim margins is separate from fit-width cropping. Views and positions persist per book.
@@ -53,7 +63,15 @@ The EPUB menu row with line spacing has two more buttons. **Align** cycles “Ju
 
 ## Dictionary and search
 
-WordNet 3.0 is offline English vocabulary with paginated senses and basic inflection/accent fallbacks. It has no pronunciation/audio and is not specialist or multilingual coverage.
+WordNet 3.0 is offline English vocabulary with paginated senses and basic inflection/accent fallbacks. It has no pronunciation/audio and is not specialist coverage.
+
+**Latin (0.10.3).** Look up also has an offline Latin dictionary (William Whitaker's WORDS). Inflected words find their dictionary form, and the popup says which form it is: *amavit* shows “amo, amare, amavi, amatus (verb, 1st conj.)” with “form: perf. act. ind. 3rd sg.”; *rosarum* shows rosa (gen. pl.); *virumque* shows vir plus “-que = and”. Macrons and accents don't matter (*Rosārum* = *rosarum*), and u/v and i/j are treated as the same letter (*Iulius* = *Jūlius*). Which dictionary is used:
+
+- In a book that declares Latin as its language (EPUB, FB2, or a PDF's language setting), Latin first.
+- In other books, English first; if English has no entry, Latin.
+- **EN** and **LA** buttons at the top of the popup switch between them for the selected word. The footer names the dictionary in use (“WordNet 3.0 / English” or “Whitaker's Words / Latin”).
+
+A word that is also English (*in*, *locus*) shows English first in an English book; tap **LA**. MOBI, AZW3 and TXT books don't declare a language, so English comes first there.
 
 Search uses an English keyboard and MuPDF text matching; it scans incrementally and can be stopped. Up to 200 hits are kept. Tap a result to navigate and briefly mark the hit. No OCR and no guarantee for cross-page phrases or broken PDF text order.
 
@@ -69,7 +87,7 @@ Everything stays on the Kindle; nothing is sent anywhere and stats are not part 
 
 ## Library and device controls
 
-Sorting and the Folder/Show filter are described below. Covers are generated lazily only for visible rows; unavailable/complex covers get placeholders. The disk cache is capped at 10 MiB, with 32 thumbnails in RAM. Changed files refresh on a later session, not via a live watcher. Since 0.8.0 cached covers load on a separate worker, new covers show a title/type placeholder immediately, and the next library page is prefetched. The header shows free/total storage and total book size; each row shows type (PDF/EPUB) and file size. A battery bar with percentage sits top-right in the library only (read-only, polled at most every three minutes, no extra refresh). Since 0.9.0 it is never drawn while a book is open, so it cannot cover text.
+Sorting and the Folder/Show filter are described below. Covers are generated lazily only for visible rows; unavailable/complex covers get placeholders. The disk cache is capped at 10 MiB, with 32 thumbnails in RAM. Changed files refresh on a later session, not via a live watcher. Since 0.8.0 cached covers load on a separate worker, new covers show a title/type placeholder immediately, and the next library page is prefetched. The header shows free/total storage and total book size; each row shows type (PDF, EPUB, MOBI, AZW3, TXT, CBZ, FB2) and file size. A battery bar with percentage sits top-right in the library only (read-only, polled at most every three minutes, no extra refresh). Since 0.9.0 it is never drawn while a book is open, so it cannot cover text.
 
 The Settings button (library and reader menu; called Light / Sleep before 0.9.1) offers separate native 0–24 brightness and warmth controls through `com.lab126.powerd` LIPC. Startup reads values and does not write them; only deliberate adjustments queue a write. No backlight sysfs write is used. Leave experimental power-button sleep OFF until the physical plan in TESTING is completed.
 
@@ -132,7 +150,7 @@ Since 0.9.3 this also speeds up scanned books from the Internet Archive and simi
 1. Make sure the Kindle and your phone or computer are on the same Wi-Fi.
 2. In the library, tap Settings, then Upload books over Wi-Fi.
 3. The screen shows an address such as `http://<Kindle address>:8080`. Open it in a browser on the phone or computer.
-4. Choose one or more PDF or EPUB files and tap Upload. The Kindle screen shows the progress and how many books arrived.
+4. Choose one or more book files (PDF, EPUB, MOBI, AZW3, TXT, CBZ or FB2) and tap Upload. The Kindle screen shows the progress and how many books arrived.
 5. Tap Close. The library refreshes and the new books appear.
 
-Rules: PDF and EPUB only, up to 500 MB per file. File names with folders, `..`, hidden names or unusual characters are refused. An existing book is never overwritten; a second copy is saved as “Name (2).epub”. An upload is refused if it would leave less than 6 GB free. The upload page exists only while that screen is open: closing it, sleeping, quitting or the idle timeout stops it immediately.
+Rules: .pdf .epub .mobi .azw3 .txt .cbz .fb2 only, up to 500 MB per file. File names with folders, `..`, hidden names or unusual characters are refused. An existing book is never overwritten; a second copy is saved as “Name (2).epub”. An upload is refused if it would leave less than 6 GB free. The upload page exists only while that screen is open: closing it, sleeping, quitting or the idle timeout stops it immediately.

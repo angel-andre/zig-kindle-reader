@@ -1,0 +1,138 @@
+--- a/source/html/mobi.c	2026-11-07 07:14:51.527188476 -0500
++++ b/source/html/mobi.c	2026-11-07 07:14:51.551188091 -0500
+@@ -232,6 +232,120 @@
+ 	fz_drop_buffer(ctx, ent);
+ }
+ 
++
++/* zreader: KF8 (AZW3) stores each XHTML file as an empty skeleton followed by
++ * its fragments, plus CSS in further "flows" (FDST). Join the files into one
++ * document: CSS flows become a <style>, skeleton wrappers are dropped, file
++ * boundaries become page breaks, kindle:embed images point at the image
++ * records. Internal kindle:pos links are not resolved. */
++static uint32_t kf8_be32(const unsigned char *p) { return (uint32_t)p[0]<<24 | (uint32_t)p[1]<<16 | (uint32_t)p[2]<<8 | p[3]; }
++
++static size_t kf8_skip_tag(const unsigned char *d, size_t i, size_t end)
++{
++	while (i < end && d[i] != '>') i++;
++	return i < end ? i + 1 : end;
++}
++
++static int kf8_starts(const unsigned char *d, size_t i, size_t end, const char *s)
++{
++	size_t n = strlen(s);
++	return i + n <= end && !memcmp(d + i, s, n);
++}
++
++static fz_buffer *
++mobi_kf8_join(fz_context *ctx, fz_buffer *text, fz_buffer *mobi, uint32_t *offsets, uint32_t n)
++{
++	const unsigned char *r0 = mobi->data + offsets[0];
++	size_t r0len = offsets[1] - offsets[0], flow0 = text->len, i, j;
++	const unsigned char *d = text->data;
++	uint32_t fdst, cnt = 0, off = 0;
++	const unsigned char *f = NULL;
++	fz_buffer *out;
++	int files = 0;
++
++	if (r0len < 0x100 || memcmp(r0 + 16, "MOBI", 4) || kf8_be32(r0 + 36) < 8)
++		return NULL;
++	fdst = kf8_be32(r0 + 0xC0);
++	if (fdst > 0 && fdst < n && offsets[fdst + 1] - offsets[fdst] >= 12 && !memcmp(mobi->data + offsets[fdst], "FDST", 4))
++	{
++		size_t flen = offsets[fdst + 1] - offsets[fdst];
++		f = mobi->data + offsets[fdst];
++		off = kf8_be32(f + 4);
++		cnt = kf8_be32(f + 8);
++		if (off < 12 || off + (size_t)cnt * 8 > flen)
++			cnt = 0;
++		if (cnt > 0)
++		{
++			uint32_t e = kf8_be32(f + off + 4);
++			if (e <= text->len)
++				flow0 = e;
++		}
++	}
++
++	out = fz_new_buffer(ctx, text->len + 1024);
++	fz_try(ctx)
++	{
++		fz_append_string(ctx, out, "<html><head><style>\n");
++		for (j = 1; j < cnt; j++)
++		{
++			uint32_t a = kf8_be32(f + off + 8 * j), b = kf8_be32(f + off + 8 * j + 4);
++			if (a < b && b <= text->len && d[a] != '<')
++				fz_append_data(ctx, out, d + a, b - a);
++		}
++		fz_append_string(ctx, out, "\n</style></head><body>\n");
++		for (i = 0; i < flow0; )
++		{
++			if (d[i] == '<')
++			{
++				if (kf8_starts(d, i, flow0, "<?xml") || kf8_starts(d, i, flow0, "<!DOCTYPE") || kf8_starts(d, i, flow0, "<html") || kf8_starts(d, i, flow0, "</html>") || kf8_starts(d, i, flow0, "</body>"))
++				{
++					if (kf8_starts(d, i, flow0, "<html") && files++ > 0)
++						fz_append_string(ctx, out, "<div style=\"page-break-before:always\"></div>");
++					i = kf8_skip_tag(d, i, flow0);
++					continue;
++				}
++				if (kf8_starts(d, i, flow0, "<body"))
++				{
++					i = kf8_skip_tag(d, i, flow0);
++					continue;
++				}
++				if (kf8_starts(d, i, flow0, "<head"))
++				{
++					size_t k = i;
++					while (k < flow0 && !kf8_starts(d, k, flow0, "</head>")) k++;
++					i = k < flow0 ? k + 7 : flow0;
++					continue;
++				}
++			}
++			if (d[i] == 'k' && kf8_starts(d, i, flow0, "kindle:embed:"))
++			{
++				int v = 0;
++				char num[16];
++				i += 13;
++				while (i < flow0 && ((d[i] >= '0' && d[i] <= '9') || (d[i] >= 'A' && d[i] <= 'V')))
++				{
++					v = v * 32 + (d[i] <= '9' ? d[i] - '0' : d[i] - 'A' + 10);
++					i++;
++				}
++				while (i < flow0 && d[i] != '"' && d[i] != '\'' && d[i] != ')') i++;
++				fz_snprintf(num, sizeof num, "%05d", v);
++				fz_append_string(ctx, out, num);
++				continue;
++			}
++			fz_append_byte(ctx, out, d[i]);
++			i++;
++		}
++		fz_append_string(ctx, out, "\n</body></html>\n");
++		fz_terminate_buffer(ctx, out);
++	}
++	fz_catch(ctx)
++	{
++		fz_drop_buffer(ctx, out);
++		fz_rethrow(ctx);
++	}
++	return out;
++}
++
+ fz_archive *
+ fz_extract_html_from_mobi(fz_context *ctx, fz_buffer *mobi)
+ {
+@@ -303,6 +417,14 @@
+ 		buffer = fz_new_buffer(ctx, 128 << 10);
+ 		extra = mobi_read_data(ctx, buffer, stm, offsets, (uint32_t)n, format);
+ 		fz_terminate_buffer(ctx, buffer);
++		{
++			fz_buffer *joined = mobi_kf8_join(ctx, buffer, mobi, offsets, (uint32_t)n);
++			if (joined)
++			{
++				fz_drop_buffer(ctx, buffer);
++				buffer = joined;
++			}
++		}
+ 
+ #ifndef NDEBUG
+ 		if (fz_atoi(getenv("FZ_DEBUG_MOBI")))

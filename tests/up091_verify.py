@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory(dir=R/'tests',prefix='up091-') as t:
  c=http.client.HTTPConnection('127.0.0.1',PORT,timeout=5);c.request('GET','/');r=c.getresponse();page=r.read().decode();assert r.status==200 and 'Send books' in page
  ok=[post('New Book.epub',EPUB.read_bytes()),post('scan.PDF',PDF.read_bytes()),post('existing.epub',EPUB.read_bytes())]
  assert all(s==200 for s,_ in ok),ok
- bad={n:post(n,b'x'*100) for n in ['../evil.epub','..%2Fevil.epub','sub/dir.pdf','.hidden.epub','notes.txt','book.exe','run.sh','book.epub.exe','a\\b.pdf','nul\x01.pdf','']}
+ bad={n:post(n,b'x'*100) for n in ['../evil.epub','..%2Fevil.epub','sub/dir.pdf','.hidden.epub','notes.docx','book.exe','run.sh','book.epub.exe','a\\b.pdf','nul\x01.pdf','']}
  assert all(s in (400,404) for s,_ in bad.values()),bad
  end=time.time()+20
  while port_open() and time.time()<end:time.sleep(0.1)

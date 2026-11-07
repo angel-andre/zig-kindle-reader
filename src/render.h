@@ -60,3 +60,4 @@ zr_doc *zr_open_cover(const char *);
 
 zr_doc *zr_open_initial(const char *,float,float,float,float,float);
 void zr_page_count_hint(zr_doc *,int);
+int zr_drm_check(const char *path);

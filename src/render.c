@@ -1,6 +1,7 @@
 /* MuPDF wrapper. Each zr_doc owns its own context and document, so one
  * zr_doc per thread gives lock-free parallel rendering. */
 #include <mupdf/fitz.h>
+#include <mupdf/pdf.h>
 #include <string.h>
 #include <math.h>
 #include <pthread.h>
@@ -38,11 +39,45 @@ static fz_font *zr_system_font(fz_context *ctx,const char *name,int bold,int ita
  (void)needs_exact_metrics;if(strcmp(name,"ZR Sans"))return NULL;int k=(bold?1:0)+(italic?2:0);
  if(!res_sans[k])k=0;if(!res_sans[k])return NULL;
  return fz_new_font_from_memory(ctx,"Noto Sans",res_sans[k],res_sans_len[k],0,0);}
+extern int fz_txt_reflow;
+extern _Thread_local int fz_html_page_break_fix;
+static void zr_init(void);
+/* v0.10.2: 1 when a book is DRM-protected (MOBI/AZW encryption flag, Amazon
+ * KFX/DRMION container, EPUB rights.xml or encryption.xml beyond font obfuscation). */
+int zr_drm_check(const char *path)
+{
+	unsigned char h[96];int drm=0;FILE *f=fopen(path,"rb");if(!f)return 0;
+	size_t n=fread(h,1,sizeof h,f);
+	if(n>=8&&!memcmp(h,"\xea" "DRMION" "\xee",8))drm=1;
+	else if(n>=80&&(!memcmp(h+60,"BOOKMOBI",8)||!memcmp(h+60,"TEXtREAd",8))){
+		unsigned off=(unsigned)h[78]<<24|(unsigned)h[79]<<16|(unsigned)h[80]<<8|h[81];unsigned char r[16];
+		if(!fseek(f,off,SEEK_SET)&&fread(r,1,16,f)==16&&(r[12]||r[13]))drm=1;
+	}
+	fclose(f);
+	if(drm||n<4||memcmp(h,"PK\x03\x04",4))return drm;
+	pthread_once(&zr_once, zr_init);
+	fz_context *ctx=zr_base?fz_clone_context(zr_base):NULL;if(!ctx)return 0;
+	fz_archive *zip=NULL;fz_buffer *b=NULL;fz_var(zip);fz_var(b);
+	fz_try(ctx){
+		zip=fz_open_zip_archive(ctx,path);
+		if(fz_has_archive_entry(ctx,zip,"META-INF/rights.xml"))drm=1;
+		else if(fz_has_archive_entry(ctx,zip,"META-INF/encryption.xml")){
+			b=fz_read_archive_entry(ctx,zip,"META-INF/encryption.xml");
+			const char *t=fz_string_from_buffer(ctx,b),*q=t;
+			while((q=strstr(q,"Algorithm=\""))){q+=11;
+				if(strncmp(q,"http://www.idpf.org/2008/embedding",34)&&strncmp(q,"http://ns.adobe.com/pdf/enc#RC",30)){drm=1;break;}}
+		}
+	}
+	fz_always(ctx){fz_drop_buffer(ctx,b);fz_drop_archive(ctx,zip);}
+	fz_catch(ctx){}
+	fz_drop_context(ctx);return drm;
+}
 static void zr_init(void)
 {
 	static fz_locks_context locks = { NULL, zr_lock, zr_unlock };
 	for (int i = 0; i < FZ_LOCK_MAX; i++) pthread_mutex_init(&zr_mutexes[i], NULL);
 	zr_base = fz_new_context(NULL, &locks, 256 << 20);
+	fz_txt_reflow = 1; /* v0.10.2: TXT books as reflowable paragraphs (mupdf-patches/02) */
 	if (zr_base) {
 		fz_try(zr_base) fz_register_document_handlers(zr_base);
 		fz_catch(zr_base) fz_report_error(zr_base);
@@ -74,7 +109,7 @@ static void drop_anchor_index(zr_doc *z);
 struct zr_doc {
 	fz_context *ctx;
 	fz_document *doc;
-	int pages, is_pdf, reflow, pending;
+	int pages, is_pdf, reflow, pending, breaks;
 	float spacing;
  float lw, lh, font, margin;
 	int styled;
@@ -94,6 +129,11 @@ static void set_css(fz_context *ctx, fz_document *doc, float margin_pt, float fo
 		book_font == 1 ? "body,body *{font-family:\"Charis SIL\" !important}pre,code,tt,kbd,samp,pre *,code *{font-family:monospace !important}" :
 		book_font == 2 ? "body,body *{font-family:\"ZR Sans\" !important}pre,code,tt,kbd,samp,pre *,code *{font-family:monospace !important}" : "");
 	if (!styled) fz_snprintf(css, sizeof css, "@page{margin:%gpt %gpt !important}body{margin:0 !important}", margin_pt * .8f, margin_pt);
+	{ /* v0.10.2: FB2 chapters (top-level sections) start a new page, like EPUB files */
+		char fmt[32] = "";
+		fz_lookup_metadata(ctx, doc, FZ_META_FORMAT, fmt, sizeof fmt);
+		if (!strcmp(fmt, "FictionBook2")) fz_strlcat(css, "body>section+section{page-break-before:always}", sizeof css);
+	}
 	fz_style_document(ctx, doc, 1, css);
 }
 
@@ -122,6 +162,7 @@ static void save_layout(zr_doc *z,const char *name){
 }
 static zr_doc *open_style(const char *path,float lw,float lh,float font_pt,float margin_pt,float spacing,int styled,int cover)
 {
+	if (cover == 1 && zr_drm_check(path)) return NULL; /* no cover for DRM books */
 	zr_doc *z = calloc(1, sizeof *z);
 	if (!z) return NULL;
 	z->spacing = spacing; z->styled=styled;
@@ -136,6 +177,9 @@ static zr_doc *open_style(const char *path,float lw,float lh,float font_pt,float
 		fz_lookup_metadata(z->ctx, z->doc, FZ_META_FORMAT, fmt, sizeof fmt);
 		z->is_pdf = strncmp(fmt, "PDF", 3) == 0;
 		z->reflow = fz_is_document_reflowable(z->ctx, z->doc);
+		/* v0.10.2: TXT/MOBI/FB2 honour page-break-before (mupdf-patches/04); EPUB unchanged */
+		z->breaks = z->reflow && strncmp(fmt, "EPUB", 4) != 0;
+		fz_html_page_break_fix = z->breaks;
 		if (z->reflow) {
             set_css(z->ctx, z->doc, margin_pt, font_pt, z->spacing, z->styled);
             fz_layout_document(z->ctx, z->doc, lw, lh, font_pt);
@@ -149,8 +193,10 @@ static zr_doc *open_style(const char *path,float lw,float lh,float font_pt,float
             }
         } else z->pages = z->reflow && (cover==1 || z->pending) ? fz_count_chapter_pages(z->ctx,z->doc,0) : fz_count_pages(z->ctx,z->doc);
         if(cover!=1&&!z->pending&&z->reflow&&!accel)save_layout(z,ap);
+		fz_html_page_break_fix = 0;
 	}
 	fz_catch(z->ctx) {
+		fz_html_page_break_fix = 0;
 		fz_report_error(z->ctx);
 		if (z->doc) fz_drop_document(z->ctx, z->doc);
 		fz_drop_context(z->ctx);
@@ -200,12 +246,15 @@ int zr_relayout(zr_doc *z, float lw, float lh, float font_pt, float margin_pt, i
 		drop_lists(z);
 		drop_anchor_index(z);
 		set_css(z->ctx, z->doc, margin_pt, font_pt, z->spacing, z->styled);
+		fz_html_page_break_fix = z->breaks;
 		fz_layout_document(z->ctx, z->doc, lw, lh, font_pt);
+		fz_html_page_break_fix = 0;
         z->lw=lw;z->lh=lh;z->font=font_pt;z->margin=margin_pt;
 		z->pages = fz_count_pages(z->ctx, z->doc);
 		out = fz_page_number_from_location(z->ctx, z->doc, fz_lookup_bookmark(z->ctx, z->doc, mark));
 	}
 	fz_catch(z->ctx) {
+		fz_html_page_break_fix = 0;
 		fz_report_error(z->ctx);
 		out = 0;
 	}
@@ -1095,3 +1144,45 @@ zr_doc *zr_open_worker(const char *path,float w,float h,float em,float margin,fl
 void zr_touch_layout(zr_doc *z){if(z)z->lw=-1;}
 
 #include "contents.inc"
+
+/* v0.10.3: declared language of a book ("la", "en", ... or "" if unknown), read on demand for
+   the dictionary: PDF /Lang, EPUB OPF dc:language, FB2 <lang>. Uses its own context. */
+static void lang_from(const char *s,size_t n,char *out,int cap){
+	int k=0;size_t i=0;while(i<n&&(s[i]==' '||s[i]=='\n'||s[i]=='\r'||s[i]=='\t'))i++;
+	while(i<n&&k<cap-1&&((s[i]>='a'&&s[i]<='z')||(s[i]>='A'&&s[i]<='Z'))){out[k++]=(s[i]>='A'&&s[i]<='Z')?s[i]+32:s[i];i++;}
+	out[k]=0;
+}
+static void tag_value(const char *s,size_t n,const char *tag,char *out,int cap){
+	size_t tl=strlen(tag);
+	for(size_t i=0;i+tl<n;i++){
+		if(s[i]!='<'||fz_strncasecmp(s+i+1,tag,tl))continue;
+		size_t j=i+1+tl;if(j<n&&s[j]!='>'&&s[j]!=' ')continue;
+		while(j<n&&s[j]!='>')j++;if(j>=n)return;
+		lang_from(s+j+1,n-j-1,out,cap);if(*out)return;
+	}
+}
+int zr_book_language(const char *path,char *out,int cap)
+{
+	if(!out||cap<3)return 0;out[0]=0;if(!path)return 0;
+	const char *dot=strrchr(path,'.');if(!dot)return 0;
+	fz_context *ctx=zr_new_ctx();if(!ctx)return 0;
+	fz_archive *arch=NULL;fz_buffer *buf=NULL;pdf_document *pdf=NULL;
+	fz_var(arch);fz_var(buf);fz_var(pdf);
+	fz_try(ctx){
+		if(!fz_strcasecmp(dot,".pdf")){
+			pdf=pdf_open_document(ctx,path);fz_text_language l=pdf_document_language(ctx,pdf);
+			if(l!=FZ_LANG_UNSET){char s[8];fz_string_from_text_language(s,l);lang_from(s,strlen(s),out,cap);}
+		}else if(!fz_strcasecmp(dot,".epub")){
+			arch=fz_open_archive(ctx,path);int n=fz_count_archive_entries(ctx,arch);
+			for(int i=0;i<n&&!*out;i++){const char *e=fz_list_archive_entry(ctx,arch,i);size_t l=e?strlen(e):0;
+				if(l>4&&!fz_strcasecmp(e+l-4,".opf")){buf=fz_read_archive_entry(ctx,arch,e);unsigned char *d;size_t bl=fz_buffer_storage(ctx,buf,&d);
+					tag_value((const char*)d,bl,"dc:language",out,cap);fz_drop_buffer(ctx,buf);buf=NULL;}}
+		}else if(!fz_strcasecmp(dot,".fb2")){
+			FILE *f=fopen(path,"rb");if(f){char b[65536];size_t bl=fread(b,1,sizeof b,f);fclose(f);tag_value(b,bl,"lang",out,cap);}
+		}
+	}
+	fz_always(ctx){fz_drop_buffer(ctx,buf);fz_drop_archive(ctx,arch);if(pdf)pdf_drop_document(ctx,pdf);}
+	fz_catch(ctx){out[0]=0;}
+	fz_drop_context(ctx);
+	return (int)strlen(out);
+}

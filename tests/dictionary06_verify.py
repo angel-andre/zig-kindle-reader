@@ -39,7 +39,10 @@ quit
  a=Image.open(S/'56_dictionary_definition.pgm');b=Image.open(S/'57_dictionary_more.pgm');c=Image.open(S/'58_dictionary_still.pgm')
  assert a.tobytes()!=b.tobytes(),'Next must show additional senses'
  assert b.tobytes()==c.tobytes(),'A swipe over modal must not pan/turn the book underneath'
- assert Image.open(S/'59_dictionary_closed.pgm').tobytes()==Image.open(d/'reference.pgm').tobytes(),'Closing restores clean book raster'
+ restored=Image.open(S/'59_dictionary_closed.pgm');reference=Image.open(d/'reference.pgm')
+ # v0.8 deliberately overlays the read-only battery HUD; all book pixels outside it must remain exact.
+ reference.paste(restored.crop((1059,0,1264,38)),(1059,0))
+ assert restored.tobytes()==reference.tobytes(),'Closing restores clean book raster outside battery HUD'
  log+=run(f'''wait 1000
 long {x} {y}
 wait 150

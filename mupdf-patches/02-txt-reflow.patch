@@ -1,0 +1,204 @@
+--- a/source/html/txt.c	2026-11-07 07:03:29.670590779 -0500
++++ b/source/html/txt.c	2026-11-07 07:06:18.637794661 -0500
+@@ -116,6 +116,150 @@
+ 	return ENCODING_ASCII;
+ }
+ 
++
++/* zreader: when set, plain text is converted to reflowable paragraphs
++ * (blank-line separated, or one per line when the file has almost no blank
++ * lines), short "Chapter ..." style lines become headings that start a page.
++ * Unset by default: upstream behaviour (preformatted text) is unchanged. */
++int fz_txt_reflow = 0;
++
++static int txt_ieq(const char *a, size_t n, const char *b)
++{
++	size_t m = strlen(b), i;
++	if (n < m) return 0;
++	for (i = 0; i < m; i++)
++		{ int c = (unsigned char)a[i]; if (c >= 'A' && c <= 'Z') c += 32; if (c != b[i]) return 0; }
++	return n == m || a[m] == ' ' || a[m] == '.' || a[m] == ':';
++}
++
++static int txt_is_heading(const char *s, size_t n)
++{
++	size_t i;
++	while (n && (s[n-1] == ' ' || s[n-1] == '.')) n--;
++	if (n == 0 || n > 60) return 0;
++	if (txt_ieq(s, n, "chapter") || txt_ieq(s, n, "book") || txt_ieq(s, n, "part") || txt_ieq(s, n, "letter") || txt_ieq(s, n, "volume"))
++	{
++		/* keyword then a number-ish word, no lowercase sentence */
++		for (i = 0; i < n && s[i] != ' ' && s[i] != '.'; i++) {}
++		while (i < n && (s[i] == ' ' || s[i] == '.')) i++;
++		return i < n && i + 1 <= n && ((s[i] >= '0' && s[i] <= '9') || (s[i] >= 'A' && s[i] <= 'Z'));
++	}
++	if (txt_ieq(s, n, "prologue") || txt_ieq(s, n, "epilogue") || txt_ieq(s, n, "preface") || txt_ieq(s, n, "introduction") || txt_ieq(s, n, "contents") || txt_ieq(s, n, "afterword") || txt_ieq(s, n, "appendix"))
++		return n < 40;
++	for (i = 0; i < n; i++)
++		if (!strchr("IVXLC", s[i])) return 0;
++	return n <= 7;
++}
++
++static void txt_esc(fz_context *ctx, fz_output *out, const char *s, size_t n)
++{
++	size_t i;
++	for (i = 0; i < n; i++)
++	{
++		if (s[i] == '<') fz_write_string(ctx, out, "&lt;");
++		else if (s[i] == '>') fz_write_string(ctx, out, "&gt;");
++		else if (s[i] == '&') fz_write_string(ctx, out, "&amp;");
++		else fz_write_byte(ctx, out, s[i]);
++	}
++}
++
++typedef struct { const char *s; size_t n; } txt_line;
++
++static void txt_trim(txt_line *l)
++{
++	while (l->n && (l->s[0] == ' ')) { l->s++; l->n--; }
++	while (l->n && (l->s[l->n-1] == ' ')) l->n--;
++}
++
++static void txt_reflow(fz_context *ctx, fz_output *out, const char *d, size_t len)
++{
++	txt_line *lines = NULL;
++	size_t nl = 0, cap = 0, i, j, blank = 0;
++	int per_line;
++	fz_var(lines);
++	fz_try(ctx)
++	{
++		size_t a = 0;
++		for (i = 0; i <= len; i++)
++			if (i == len || d[i] == '\n')
++			{
++				if (nl == cap) { cap = cap ? cap * 2 : 1024; lines = fz_realloc(ctx, lines, cap * sizeof *lines); }
++				lines[nl].s = d + a; lines[nl].n = i - a; nl++; a = i + 1;
++			}
++		for (i = 0; i < nl; i++) { txt_line t = lines[i]; txt_trim(&t); if (!t.n) blank++; }
++		per_line = nl > 20 && blank * 20 < nl;
++		fz_write_string(ctx, out, "<!doctype html><html><head><style>h2{page-break-before:always;text-align:center;font-size:1.3em;margin:1em 0 1.2em 0}p{margin:0;text-indent:1.5em}p.v{text-indent:0;margin:0.5em 0 0.5em 1.5em}p.c{text-indent:0;text-align:center;margin:0.6em 0}</style></head><body>\n");
++		i = 0;
++		while (i < nl)
++		{
++			size_t k, maxn = 0, first_n;
++			int indented = 1;
++			txt_line t = lines[i]; txt_trim(&t);
++			if (!t.n || lines[i].s[0] == '\f') { i++; continue; }
++			j = i;
++			if (per_line) j = i + 1;
++			else while (j < nl) { txt_line u = lines[j]; txt_trim(&u); if (!u.n || lines[j].s[0] == '\f') break; j++; }
++			for (k = i; k < j; k++) { if (lines[k].n > maxn) maxn = lines[k].n; if (lines[k].n && lines[k].s[0] != ' ') indented = 0; }
++			first_n = t.n;
++			if ((j == i + 1 || (j == i + 2 && !per_line && lines[i+1].n <= 50)) && txt_is_heading(t.s, t.n))
++			{
++				fz_write_string(ctx, out, "<h2>");
++				txt_esc(ctx, out, t.s, t.n);
++				if (j == i + 2)
++				{
++					txt_line u = lines[i+1];
++					txt_trim(&u);
++					fz_write_string(ctx, out, "<br/>");
++					txt_esc(ctx, out, u.s, u.n);
++				}
++				else
++				/* a following single short line without a full stop is the chapter title */
++				if (!per_line)
++				{
++					size_t m = j;
++					while (m < nl) { txt_line u = lines[m]; txt_trim(&u); if (u.n) break; m++; }
++					if (m < nl)
++					{
++						txt_line u = lines[m], v = m + 1 < nl ? lines[m+1] : (txt_line){ "", 0 };
++						txt_trim(&u); txt_trim(&v);
++						if (u.n && u.n <= 50 && !v.n && u.s[u.n-1] != '.' && !txt_is_heading(u.s, u.n))
++						{
++							fz_write_string(ctx, out, "<br/>");
++							txt_esc(ctx, out, u.s, u.n);
++							j = m + 1;
++						}
++					}
++				}
++				fz_write_string(ctx, out, "</h2>\n");
++			}
++			else if (!per_line && j > i + 1 && (indented || maxn <= 50))
++			{
++				fz_write_string(ctx, out, "<p class=\"v\">");
++				for (k = i; k < j; k++) { txt_line u = lines[k]; txt_trim(&u); if (k > i) fz_write_string(ctx, out, "<br/>"); txt_esc(ctx, out, u.s, u.n); }
++				fz_write_string(ctx, out, "</p>\n");
++			}
++			else if (j == i + 1 && first_n <= 40 && lines[i].s[0] == ' ' && !per_line)
++			{
++				fz_write_string(ctx, out, "<p class=\"c\">");
++				txt_esc(ctx, out, t.s, t.n);
++				fz_write_string(ctx, out, "</p>\n");
++			}
++			else
++			{
++				fz_write_string(ctx, out, "<p>");
++				for (k = i; k < j; k++) { txt_line u = lines[k]; txt_trim(&u); if (k > i) fz_write_byte(ctx, out, ' '); txt_esc(ctx, out, u.s, u.n); }
++				fz_write_string(ctx, out, "</p>\n");
++			}
++			i = j;
++		}
++		fz_write_string(ctx, out, "</body></html>\n");
++	}
++	fz_always(ctx)
++		fz_free(ctx, lines);
++	fz_catch(ctx)
++		fz_rethrow(ctx);
++}
++
+ fz_buffer *
+ fz_txt_buffer_to_html(fz_context *ctx, fz_buffer *in)
+ {
+@@ -133,7 +277,8 @@
+ 		outbuf = fz_new_buffer(ctx, 1024);
+ 		out = fz_new_output_with_buffer(ctx, outbuf);
+ 
+-		fz_write_string(ctx, out, "<!doctype html><style>body{margin:0}pre{page-break-before:always;margin:0;white-space:pre-wrap;}</style><pre>");
++		if (!fz_txt_reflow)
++			fz_write_string(ctx, out, "<!doctype html><style>body{margin:0}pre{page-break-before:always;margin:0;white-space:pre-wrap;}</style><pre>");
+ 
+ 		if (encoding == ENCODING_UTF16_LE || encoding == ENCODING_UTF16_BE)
+ 		{
+@@ -167,6 +312,15 @@
+ 				c = fz_read_utf16_be(ctx, stream);
+ 			}
+ 
++			if (fz_txt_reflow)
++			{
++				if (c == 13) { if (!fz_is_eof(ctx, stream) && fz_peek_byte(ctx, stream) == 10) continue; c = 10; }
++				if (c == 9) c = ' ';
++				if (c == 12) { fz_write_string(ctx, out, "\n\f\n"); continue; }
++				if (c == 0xa0) c = ' ';
++				if (c >= 0) fz_write_rune(ctx, out, c);
++				continue;
++			}
+ 			if (c == 10 || c == 13)
+ 			{
+ 				col = -1;
+@@ -199,6 +353,24 @@
+ 		}
+ 
+ 		fz_close_output(ctx, out);
++		if (fz_txt_reflow)
++		{
++			fz_buffer *plain = outbuf;
++			outbuf = NULL;
++			fz_drop_output(ctx, out);
++			out = NULL;
++			fz_try(ctx)
++			{
++				outbuf = fz_new_buffer(ctx, plain->len + plain->len / 8 + 1024);
++				out = fz_new_output_with_buffer(ctx, outbuf);
++				txt_reflow(ctx, out, (const char *)plain->data, plain->len);
++				fz_close_output(ctx, out);
++			}
++			fz_always(ctx)
++				fz_drop_buffer(ctx, plain);
++			fz_catch(ctx)
++				fz_rethrow(ctx);
++		}
+ 	}
+ 	fz_always(ctx)
+ 	{

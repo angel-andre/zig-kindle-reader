@@ -1,0 +1,23 @@
+--- a/source/html/html-layout.c	2026-11-07 07:10:42.864880705 -0500
++++ b/source/html/html-layout.c	2026-11-07 07:10:42.884880644 -0500
+@@ -2772,6 +2772,9 @@
+ 
+ /* === LAYOUT BLOCKS === */
+ 
++/* zreader: per-thread switch, off by default (upstream behaviour). */
++_Thread_local int fz_html_page_break_fix = 0;
++
+ /*
+ 	Layout a BOX_BLOCK.
+ 
+@@ -2827,6 +2830,10 @@
+ 
+ 	/* TODO: remove 'vertical' margin adjustments across automatic page breaks */
+ 	eop = layout_block_page_break(ctx, ld, &ld->used[B], style->page_break_before);
++	/* zreader: pre_position starts the box at bounds[T], which drops the break; when
++	 * enabled (TXT books only) start the box where the break moved us. */
++	if (eop && fz_html_page_break_fix && ld->used[B] > ld->bounds[T])
++		ld->bounds[T] = ld->used[B];
+ 
+ 
+ 	/* Cope with positioned blocks. */

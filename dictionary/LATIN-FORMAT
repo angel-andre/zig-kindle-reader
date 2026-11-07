@@ -1,0 +1,22 @@
+ZRLA1001 Latin dictionary file (little-endian), produced by dictionary/build_latin.py
+
+Header (64 bytes):
+  0  char[8]  "ZRLA1001"
+  8  u32      stem count        12 u32 entry count      16 u32 ending count
+ 20  u32      stem index offset (always 64)
+ 24  u32      stem key bytes    28 u32 stem refs        32 u32 entries
+ 36  u32      endings           40 u32 ending descriptions
+ 44  u32      entry text        48 u32 file size        52..63 reserved (0)
+Stem index: 12-byte records sorted by key bytes: u32 key offset, u16 key length,
+  u16 ref count, u32 refs offset. Refs are u32: entry id << 2 | stem number (0..3).
+Entry (12 bytes): u8 part of speech (1 noun 2 pron 3 adj 4 num 5 verb 6 adv
+  7 prep 8 conj 9 interj 10 fixed form), u8 declension/conjugation, u8 variant,
+  u8 gender (0 any 1 m 2 f 3 n 4 common), u8 comparison (0 any 1 pos 2 comp
+  3 superl), u8 frequency (0 = most common), u16 0, u32 text offset.
+Ending (20 bytes): u8 part of speech, u8 declension/conjugation (0 = any),
+  u8 variant (0 = any), u8 stem number 1..4, u8 gender, u8 comparison,
+  u8 frequency, u8 ending length, char[8] ending, u32 description offset.
+Text: "headword\0part-of-speech tag\0meaning\0" (UTF-8). Fixed forms put
+  " <em dash> form description" after the tag.
+Folding (keys, endings and looked-up words alike): lowercase, accents and
+  macrons removed, ae/oe ligatures expanded, j -> i, v -> u.

@@ -72,13 +72,15 @@ static void ct_page(int page,ct_line *ls,int n,ct_ent *e,int *ne){
   if(kind){
    while(*rest==' ')rest++;
    char tok[16]={0};int k=0;while(rest[k]&&rest[k]!=' '&&k<15){tok[k]=rest[k];k++;}const char *after=rest+k;while(*after==' ')after++;
+   {int tl=(int)strlen(tok);while(tl>1&&(tok[tl-1]=='.'||tok[tl-1]==':'))tok[--tl]=0;} /* "CHAPTER I." */
+   if(strstr(after,"CHAPTER ")||strstr(after,"Chapter "))continue; /* a printed contents line */
    ct_ent x;memset(&x,0,sizeof x);x.page=page;x.kind=kind;
    if(kind==1&&(!strcasecmp(tok,"NOTES"))){ x.kind=3;snprintf(x.name,sizeof x.name,"Chapter Notes"); e[(*ne)++]=x;return; }
    int next=i+1;
    if(!tok[0]&&next<n&&strlen(ls[next].t)<=6){snprintf(tok,sizeof tok,"%s",ls[next].t);next++;}
    if(tok[0]){x.ncand=ct_number(tok,x.cand,&x.roman);if(!x.ncand&&(strlen(tok)>3||*after))continue;} /* "CHAPTER" + an unreadable short token is kept as unknown */
    else if(kind==2)continue;
-   if(*after&&ct_is_title(after))snprintf(x.title,sizeof x.title,"%s",after);
+   if(*after&&(ct_is_title(after)||(ct_reflow&&strlen(after)<=48)))snprintf(x.title,sizeof x.title,"%s",after); /* reflowed books: "CHAPTER I. Down the Rabbit-Hole" */
    for(int j=next;j<n&&j<next+2;j++){if(!ct_is_title(ls[j].t))break;size_t L=strlen(x.title);if(L+strlen(ls[j].t)+2>=sizeof x.title)break;if(L)strcat(x.title," ");strcat(x.title,ls[j].t);}
    if(strlen(x.title)>=3)ct_titlecase(x.title);else x.title[0]=0;
    e[(*ne)++]=x;return;}
@@ -91,7 +93,7 @@ static int ct_chain(ct_ent *e,int ne,int kind){
  int idx[CT_MAXE],m=0;for(int i=0;i<ne;i++)if(e[i].kind==kind&&e[i].ncand)idx[m++]=i;
  static int score[CT_MAXE][3],from[CT_MAXE][3],fromc[CT_MAXE][3];int best=-1,bi=0,bc=0;
  for(int a=0;a<m;a++)for(int c=0;c<e[idx[a]].ncand;c++){int v=e[idx[a]].cand[c];score[a][c]=4+(v==1?1:0);from[a][c]=-1;
-  for(int b=0;b<a;b++)for(int d=0;d<e[idx[b]].ncand;d++){int w=e[idx[b]].cand[d];if(w>=v)continue;int s=score[b][d]+4+(v-w==1?1:0)-(v-w>3?2:0);if(s>score[a][c]){score[a][c]=s;from[a][c]=b;fromc[a][c]=d;}}
+  for(int b=0;b<a;b++)for(int d=0;d<e[idx[b]].ncand;d++){int w=e[idx[b]].cand[d];if(w>=v||v-w>12)continue;int s=score[b][d]+4+(v-w==1?1:0)-(v-w>3?2:0);if(s>score[a][c]){score[a][c]=s;from[a][c]=b;fromc[a][c]=d;}}
   if(score[a][c]>best){best=score[a][c];bi=a;bc=c;}}
  int kept=0;if(best<0)return 0;
  for(int a=bi,c=bc;a>=0;){ct_ent *x=&e[idx[a]];x->keep=1;x->val=x->cand[c];x->roman=x->roman&&c==0;kept++;int na=from[a][c],nc=fromc[a][c];a=na;c=nc;}
