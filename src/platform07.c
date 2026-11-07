@@ -30,6 +30,7 @@ static void nap(void){struct timespec t={0,20000000};nanosleep(&t,0);}
 static int devpipe[2]={-1,-1},uiwake=-1;
 void zr_set_ui_wake(int fd){uiwake=fd;}
 static void uikick(void){if(uiwake>=0){char c='w';if(write(uiwake,&c,1)<0){}}}
+void zr_ui_kick(void){uikick();}
 static void devkick(void){if(devpipe[1]>=0){char c=1;if(write(devpipe[1],&c,1)<0){}}}
 /* Spawn+bounded reap, even when a firmware CLI hangs. Safe from worker threads. */
 static int command(char *const argv[],char *out,size_t cap,int timeout){

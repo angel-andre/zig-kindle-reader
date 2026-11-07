@@ -8,6 +8,10 @@
 - While reading: tap the centre to open the menu, then Quit.
 - Power button: quit by default. Idle timeout defaults to 10 minutes and exits rather than entering reader-managed sleep.
 - Contents opens a document's table of contents. The menu also offers progress, go-to and return to start.
+
+### Contents for books without one (0.10.1)
+
+If a PDF or EPUB has no table of contents, the first time you open Contents the reader looks through the text for chapter headings (“CHAPTER I”, “Chapter 1”, “PART TWO”, Preface, Prologue, Index and so on), using the OCR text of scanned books. A progress line shows while it works; you can close Contents and keep reading. The list is saved, so later it opens at once, and the screen is marked “(detected)”. Tap an entry to go there. For these books Contents always has **Go to page...** (type a page number with the keyboard digits, then Save) and **Go to %...** (0–100). If no reliable headings are found, only those two buttons are shown. Books that have their own table of contents look exactly as before.
 - Since 0.9.4 the in-book menu has no Up/Down buttons (tap or swipe the page instead). For PDFs, the second row holds the view mode and Reset pan, with free space for future buttons.
 
 ## Bookmarks

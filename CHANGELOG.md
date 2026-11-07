@@ -2,6 +2,10 @@
 
 Earlier versions were early prototypes and are not listed.
 
+## 0.10.1
+
+Contents for books without an outline: when a PDF or EPUB has no table of contents, opening Contents scans the text (the OCR text layer for scanned books) in the background for chapter headings near the top of a page (CHAPTER/Chapter/PART/BOOK with digits, roman numerals or number words, plus Preface, Prologue, Epilogue, Notes, Index and similar). Progress is shown and you can keep reading; the result is cached in `state/contents/` and labelled “Contents (detected)”. Running headers and stray matches are rejected; if nothing reliable is found, no entries are shown. Contents of such books always offers “Go to page...” and “Go to %...” with number entry. Books with a real outline are unchanged, and page turns are not slowed while the scan runs. A 772-page scanned book takes about 0.55 s on a desktop and a few seconds on the Kindle. Printed contents pages are not parsed yet, and a heading the OCR misread is skipped.
+
 ## 0.10.0
 
 Better EPUB text (EPUBs only; PDF pages unchanged): two new EPUB menu buttons either side of line spacing. Align cycles “Justify + hyphens” (the new default), “Justify” and “Align: original” (exactly the 0.9.x layout); Font cycles “Font: book” (the book’s own fonts), “Font: Charis” (Charis SIL serif) and “Font: Noto Sans”. Both are saved in `ui07.json`, and changing them re-lays the book out at the same place. Hyphenation uses MuPDF’s built-in patterns (English, German, French, Spanish, Italian, Portuguese, Russian and others) plus compact Latin patterns; books that declare no language are hyphenated as English, and `xml:lang` is honoured (a small MuPDF patch in `mupdf-patches/`, applied by `build-mupdf.sh`). A book’s own centred or right-aligned paragraphs keep their alignment. Adds about 0.39 MB (Noto Sans Bold/Italic/Bold Italic, Latin subsets).

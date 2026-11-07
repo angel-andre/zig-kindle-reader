@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.10.0";
+const VERSION = "0.10.1";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 // v0.10.0 second book font (OFL, Latin subset) and compact Latin hyphenation patterns (MIT).
 const sans_bold = @embedFile("fonts/NotoSans-Bold-Latin.ttf");
@@ -32,6 +32,9 @@ extern fn zr_battery() c_int;
 extern fn zr_set_text_resources(la: [*]const u8, la_len: c_int, r: [*]const u8, rl: c_int, b: [*]const u8, bl: c_int, i: [*]const u8, il: c_int, bi: [*]const u8, bil: c_int) void;
 extern fn zr_set_text_style(mode: c_int, font: c_int) void;
 extern fn zr_touch_layout(z: ?*ZrDoc) void;
+extern fn zr_contents_start(path: [*:0]const u8, out: [*:0]const u8, reflow: c_int, lw: f32, lh: f32, font: f32, margin: f32, spacing: f32) c_int;
+extern fn zr_contents_poll(done: *c_int, total: *c_int, found: *c_int, ms: *c_int) c_int;
+extern fn zr_contents_stop() void;
 extern fn zr_set_ui_wake(fd: c_int) void;
 extern fn zr_file_mtime(path: [*:0]const u8) i64;
 extern fn zr_up_start(books: [*:0]const u8, port: c_int, max: u64, free_floor: u64, device: c_int) c_int;
@@ -1275,6 +1278,8 @@ const Book = struct {
     toc_text: []u8 = &.{},
     ntoc: usize = 0,
     toc_loaded: bool = false,
+    toc_detected: bool = false,
+    toc_real: bool = false,
     notes: [1024]Note = undefined,
     nnotes: usize = 0,
     opened_ts: i64 = 0,
@@ -1708,6 +1713,9 @@ fn pcSameAsPreview() bool {
 
 fn closeBook() void {
     if (!book.open) return;
+    zr_contents_stop();
+    ct_running = false;
+    ct_status = 0;
     statsCloseBook();
     pcCaptureNow();
     stopWorkers();
@@ -1916,6 +1924,118 @@ fn loadToc() void {
     const n = zr_outline(book.doc, book.toc.ptr, @intCast(book.toc.len), book.toc_text.ptr, @intCast(book.toc_text.len));
     book.ntoc = @intCast(@max(n, 0));
     book.toc_loaded = true;
+    book.toc_real = book.ntoc > 0;
+    book.toc_detected = false;
+    if (!book.toc_real) loadDetectedToc();
+}
+
+// ---- v0.10.1 Contents fallback for books without an outline ----
+// Detected on a low-priority thread the first time Contents is opened, cached
+// in DATA/state/contents/<key>.tsv (key: book identity + layout). Books with a
+// real outline never use it.
+var ct_running = false;
+var ct_last_pct: i32 = -1;
+var ct_status: u8 = 0; // 0 not started, 1 running, 2 done (cache written), 3 failed
+fn contentsCachePath(out: []u8) ?[:0]const u8 {
+    var kb: [1400]u8 = undefined;
+    const k = std.fmt.bufPrint(&kb, "ct1|{s}|{d}|{d}|{d}|{d:.2}|{d:.1}|{d:.2}|{d}|{d}", .{ book.pathS(), book.fsize, book.fmtime, @intFromBool(book.reflow), if (book.reflow) pool.font else 0, if (book.reflow) pool.margin else 0, if (book.reflow) pool.spacing else 0, if (book.reflow) text_mode else 0, if (book.reflow) book_font else 0 }) catch return null;
+    return std.fmt.bufPrintSentinel(out, "{s}/state/contents/{x:0>16}.tsv", .{ opts.data, fnv(k) }, 0) catch null;
+}
+fn loadDetectedToc() void {
+    var pb: [1300]u8 = undefined;
+    if (!ct_running) ct_status = 0;
+    const p = contentsCachePath(&pb) orelse return;
+    const data = readFile(p) orelse return;
+    defer alloc.free(data);
+    ct_status = 2;
+    var it = std.mem.splitScalar(u8, data, '\n');
+    const head = it.next() orelse return;
+    if (!std.mem.startsWith(u8, head, "zrcontents\t1")) return;
+    var n: usize = 0;
+    var tl: usize = 0;
+    while (it.next()) |line| {
+        if (n >= book.toc.len) break;
+        var f = std.mem.splitScalar(u8, line, '\t');
+        const page = std.fmt.parseInt(i32, f.next() orelse continue, 10) catch continue;
+        const level = std.fmt.parseInt(i32, f.next() orelse continue, 10) catch continue;
+        const label = f.rest();
+        if (label.len == 0 or page < 0 or page >= pool.npages or tl + label.len > book.toc_text.len) continue;
+        @memcpy(book.toc_text[tl..][0..label.len], label);
+        book.toc[n] = .{ .page = page, .level = level, .off = @intCast(tl), .len = @intCast(label.len) };
+        tl += label.len;
+        n += 1;
+    }
+    book.ntoc = n;
+    book.toc_detected = n > 0;
+    logf("contents: detected {d} entr{s} (cached)", .{ n, if (n == 1) "y" else "ies" });
+}
+fn ensureDetectedToc() void {
+    loadToc();
+    if (book.toc_real or ct_running or ct_status == 2) return;
+    var pb: [1300]u8 = undefined;
+    const p = contentsCachePath(&pb) orelse return;
+    var db: [1200]u8 = undefined;
+    if (std.fmt.bufPrint(&db, "{s}/state/contents", .{opts.data})) |d| mkdirP(d) else |_| {}
+    var zb: [1200]u8 = undefined;
+    const zp = std.fmt.bufPrintSentinel(&zb, "{s}", .{book.pathS()}, 0) catch return;
+    if (zr_contents_start(zp, p, @intFromBool(book.reflow), LW, LH, pool.font, pool.margin, pool.spacing) != 0) return;
+    ct_running = true;
+    ct_status = 1;
+    ct_last_pct = -1;
+    logf("contents: no outline; detecting chapter headings in the background", .{});
+}
+fn contentsTick() void {
+    if (!ct_running) return;
+    var done: c_int = 0;
+    var total: c_int = 0;
+    var found: c_int = 0;
+    var ms: c_int = 0;
+    const st = zr_contents_poll(&done, &total, &found, &ms);
+    if (st == 1) {
+        const pct: i32 = if (total > 0) @divTrunc(done * 100, total) else 0;
+        if (screen == .toc and @divTrunc(pct, 10) != @divTrunc(ct_last_pct, 10)) markDirty(contentsStatusRect(), WF_REAGL);
+        ct_last_pct = pct;
+        return;
+    }
+    ct_running = false;
+    ct_status = if (st == 2) 2 else 3;
+    logf("contents: detection {s}: {d} entr{s} from {d} pages in {d} ms", .{ if (st == 2) "done" else "failed", found, if (found == 1) "y" else "ies", total, ms });
+    if (st == 2) {
+        book.toc_loaded = false;
+        loadToc();
+    }
+    if (screen == .toc) markFull(WF_REAGL);
+}
+fn contentsStatusRect() Rect {
+    return .{ .x = 0, .y = 340, .w = @intCast(W), .h = 150 };
+}
+fn openGoto(t: EditTarget) void {
+    edit_target = t;
+    note_len = 0;
+    note_shift = false;
+    showScreen(.noteedit);
+}
+fn closeGoto(save: bool) void {
+    const t = edit_target;
+    edit_target = .note;
+    const s = std.mem.trim(u8, note_buf[0..note_len], " %.");
+    const v = std.fmt.parseInt(i32, s, 10) catch -1;
+    if (!save) return showScreen(.toc);
+    if (t == .goto_page) {
+        if (v < 1 or v > pool.npages) {
+            showScreen(.toc);
+            return toast("Enter a page from 1 to {d}", .{pool.npages});
+        }
+        showScreen(.reader);
+        return goPage(v - 1, nowUs());
+    }
+    if (v < 0 or v > 100) {
+        showScreen(.toc);
+        return toast("Enter a percentage from 0 to 100", .{});
+    }
+    showScreen(.reader);
+    const target: i32 = @intCast(@divTrunc(@as(i64, @max(pool.npages - 1, 0)) * v, 100));
+    return goPage(target, nowUs());
 }
 
 // ---------------- v0.7 library, device controls and opt-in sleep ----------------
@@ -2272,6 +2392,7 @@ fn wakeReader() void {
     logf("sleep: wake; restore GC16", .{});
 }
 fn tick07() void {
+    contentsTick();
     if (screen == .library and sleep_phase == .awake and battery_class_drawn != 255 and batteryLevelClass(batteryValue()) != battery_class_drawn) markDirty(lowBatteryRect().grow(20), WF_REAGL);
     const rev = zr_thumb_revision();
     if (rev != thumb_revision) {
@@ -3021,11 +3142,15 @@ fn header(title: []const u8, close: bool) void {
 const ROW_H: i32 = 150;
 const LIST_TOP: i32 = 220;
 fn rowsPerPage() usize {
-    if (screen == .library) return @intCast(@divTrunc(@as(i32, @intCast(H)) - LIST_TOP - 320, ROW_H));
+    if (screen == .library or tocFallback()) return @intCast(@divTrunc(@as(i32, @intCast(H)) - LIST_TOP - 320, ROW_H));
     return @intCast(@divTrunc(@as(i32, @intCast(H)) - LIST_TOP - 210, ROW_H));
 }
 fn rowRect(i: usize) Rect {
-    return .{ .x = 70, .y = LIST_TOP + @as(i32, if (screen == .library) 110 else 0) + @as(i32, @intCast(i)) * ROW_H, .w = @as(i32, @intCast(W)) - 140, .h = ROW_H };
+    return .{ .x = 70, .y = LIST_TOP + @as(i32, if (screen == .library or tocFallback()) 110 else 0) + @as(i32, @intCast(i)) * ROW_H, .w = @as(i32, @intCast(W)) - 140, .h = ROW_H };
+}
+// v0.10.1: Contents of a book without an outline has the jump buttons above the list.
+fn tocFallback() bool {
+    return screen == .toc and book.open and !book.toc_real;
 }
 fn pagerPrev() Rect {
     return .{ .x = 70, .y = @as(i32, @intCast(H)) - 140, .w = 300, .h = 100 };
@@ -3269,7 +3394,18 @@ fn drawToc() void {
     loadToc();
     header("Contents", true);
     drawBookStatsLine(430, 95);
-    if (book.ntoc == 0) text(SANS, 34, 70, 300, "This book has no table of contents.", 0x33);
+    const fallback = !book.toc_real;
+    if (fallback) {
+        button(libraryControl(0), "Go to page...", false);
+        button(libraryControl(1), "Go to %...", false);
+        if (book.toc_detected) textCenter(SANS, 30, libraryControl(2), "(detected)", 0x55);
+        if (!book.toc_detected) {
+            const msg = if (ct_status == 1) "Looking for chapter headings..." else if (ct_status == 3) "Could not read this book's text." else "No chapter headings found in the text.";
+            text(SANS, 34, 70, 400, msg, 0x33);
+            var pb: [80]u8 = undefined;
+            if (ct_status == 1) text(SANS, 30, 70, 460, std.fmt.bufPrint(&pb, "{d}% \xc2\xb7 you can keep reading meanwhile", .{@max(ct_last_pct, 0)}) catch "", 0x55) else text(SANS, 30, 70, 460, "Use Go to page or Go to % to jump.", 0x55);
+        }
+    }
     const per = rowsPerPage();
     var i: usize = 0;
     while (i < per) : (i += 1) {
@@ -3523,7 +3659,7 @@ var note_edit_idx: usize = 0;
 var note_buf: [480]u8 = undefined;
 var note_len: usize = 0;
 var note_shift = false;
-const EditTarget = enum { note, coll_new, coll_rename };
+const EditTarget = enum { note, coll_new, coll_rename, goto_page, goto_pct };
 var edit_target: EditTarget = .note;
 var edit_coll: usize = 0;
 var edit_add_entry: ?usize = null;
@@ -3566,6 +3702,7 @@ fn openNoteEditor(k: usize) void {
     showScreen(.noteedit);
 }
 fn closeNoteEditor(save: bool) void {
+    if (edit_target == .goto_page or edit_target == .goto_pct) return closeGoto(save);
     if (edit_target != .note) return closeNameEditor(save);
     if (save and note_edit_idx < book.nnotes) {
         const n = &book.notes[note_edit_idx];
@@ -3613,7 +3750,14 @@ fn drawWrapped(font: c_int, size: f32, r: Rect, s: []const u8, max_lines: usize,
     }
 }
 fn drawNoteEditor() void {
-    header(if (edit_target == .note) "Note" else if (edit_target == .coll_new) "New collection" else "Rename collection", true);
+    var hb: [64]u8 = undefined;
+    header(switch (edit_target) {
+        .note => "Note",
+        .coll_new => "New collection",
+        .coll_rename => "Rename collection",
+        .goto_page => std.fmt.bufPrint(&hb, "Go to page (1-{d})", .{pool.npages}) catch "Go to page",
+        .goto_pct => "Go to percent (0-100)",
+    }, true);
     if (edit_target == .note and note_edit_idx < book.nnotes) {
         const n = &book.notes[note_edit_idx];
         var q: [600]u8 = undefined;
@@ -4668,10 +4812,18 @@ fn onTap(x: i32, y: i32, t_ev: u64) void {
         },
         .toc, .notes => {
             if (topButton(true).contains(x, y)) return showScreen(.reader);
+            if (screen == .toc and !book.toc_real) {
+                if (libraryControl(0).contains(x, y)) return openGoto(.goto_page);
+                if (libraryControl(1).contains(x, y)) return openGoto(.goto_pct);
+            }
             if (listNav(x, y)) return;
             for (0..per) |i| {
                 if (!rowRect(i).contains(x, y)) continue;
                 const k = list_page * per + i;
+                if (screen == .toc and book.toc_detected and k < book.ntoc) {
+                    showScreen(.reader);
+                    return goPage(book.toc[k].page, t_ev);
+                }
                 if (screen == .toc and k < book.ntoc) {
                     showScreen(.reader);
                     return goPage(book.toc[k].page, t_ev);
@@ -4735,7 +4887,10 @@ fn onReaderTap(x: i32, y: i32, t_ev: u64) void {
             need_page = false;
             return showScreen(.search);
         }
-        if (panelButton(0, 0).contains(x, y)) return showScreen(.toc);
+        if (panelButton(0, 0).contains(x, y)) {
+            showScreen(.toc);
+            return ensureDetectedToc();
+        }
         if (panelButton(0, 1).contains(x, y)) return showScreen(.notes);
         if (panelButton(0, 2).contains(x, y)) {
             menu_open = false;

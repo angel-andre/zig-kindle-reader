@@ -1093,3 +1093,5 @@ zr_doc *zr_open_worker(const char *path,float w,float h,float em,float margin,fl
 
 /* v0.10.0: force the next zr_relayout after a text style change. */
 void zr_touch_layout(zr_doc *z){if(z)z->lw=-1;}
+
+#include "contents.inc"
