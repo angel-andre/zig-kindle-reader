@@ -1,4 +1,4 @@
-# Install or upgrade 0.8.1
+# Install or upgrade 0.8.2
 
 These are explicit manual instructions, not an automatic device installer. All writes are to the user storage partition. Start with PREREQUISITES and keep SSH recovery available.
 
@@ -9,7 +9,7 @@ From the repository root:
 ```sh
 sha256sum -c release/SHA256SUMS
 # macOS alternative: shasum -a 256 -c release/SHA256SUMS
-tar -tzf release/zr081.tgz
+tar -tzf release/zr082.tgz
 ```
 
 Expected runtime members: `out/zreader`, `zreader-run.sh`, `zreader-maintenance.sh`, `dictionary/`, `kual/zreader/`, `README`, `COPYING`. Install the **runtime**, never a source archive or development fixtures.
@@ -45,7 +45,7 @@ scp -O -i "$KINDLE_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -P 2222  root@"$K
 ## 3. Stage on user storage, not /tmp
 
 ```sh
-scp -O -i "$KINDLE_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -P 2222  release/zr081.tgz root@"$KINDLE_HOST":/mnt/us/zr081.tgz
+scp -O -i "$KINDLE_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -P 2222  release/zr082.tgz root@"$KINDLE_HOST":/mnt/us/zr082.tgz
 ssh -i "$KINDLE_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -p 2222 root@"$KINDLE_HOST"
 ```
 
@@ -54,7 +54,7 @@ The remaining commands run **on the Kindle**. Use a new empty staging directory;
 ```sh
 mkdir /mnt/us/zreader-install-07
 cd /mnt/us/zreader-install-07
-tar -xzf /mnt/us/zr081.tgz
+tar -xzf /mnt/us/zr082.tgz
 mkdir -p /mnt/us/zreader/dictionary /mnt/us/extensions
 cp out/zreader /mnt/us/zreader/zreader
 cp zreader-run.sh zreader-maintenance.sh /mnt/us/zreader/
@@ -66,7 +66,7 @@ sync
 /mnt/us/zreader/zreader --version
 ```
 
-Expect `0.8.1`. Preserve existing `state/`, `notes/`, `export/`, `settings.json`, `ui07.json` and `last_book`. The runtime does not contain replacement copies of these user files. Make `/mnt/us/Books` if needed and copy your own DRM-free PDFs/EPUBs there.
+Expect `0.8.2`. Preserve existing `state/`, `notes/`, `export/`, `settings.json`, `ui07.json` and `last_book`. The runtime does not contain replacement copies of these user files. Make `/mnt/us/Books` if needed and copy your own DRM-free PDFs/EPUBs there.
 
 ## 4. First launch
 

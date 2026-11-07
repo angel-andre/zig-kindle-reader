@@ -56,6 +56,8 @@ Zigg Reader's higher PDF memory comes from pre-rendering and caching nearby page
 
 ## Caveats
 
+- times are to the framebuffer update; the e-ink refresh itself adds roughly 250 ms for both readers. The test measured steady forward reading, where Zigg Reader had already prefetched the next pages. On a heavy scanned PDF, a page that isn't prefetched yet (right after opening, after a jump, or when turning faster than pages render) can take about 1–3 s in Zigg Reader too. KOReader was measured the same way, so the comparison is like for like.
+
 - One device, two books, one session. Results may differ on other books or firmware.
 - Framebuffer-change timing, not physical e-ink completion.
 - KOReader's library-launch samples were invalid (no usable screen change was captured), so library launch is not compared. Zigg Reader's library launch was about 1.18 s.

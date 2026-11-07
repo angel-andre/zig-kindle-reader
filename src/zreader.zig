@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.8.1";
+const VERSION = "0.8.2";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 
 // ---------------- C ----------------
@@ -2992,22 +2992,30 @@ fn listNav(x: i32, y: i32) bool {
     return false;
 }
 
+// v0.8.2 exit gesture: three taps in a row inside the top-left corner (W/6 x H/8)
+// of a list screen (library, folders, Contents, Notes, search, device). That area
+// holds no button on those screens. In the book view every corner is a page-turn
+// zone, so the gesture is off there (use menu -> Quit). Any other tap, handled or
+// not, resets the count, so fast paging / page turning can never quit.
 var corner_taps: [3]u64 = .{ 0, 0, 0 };
+fn exitCorner(x: i32, y: i32) bool {
+    if (screen == .reader) return false;
+    return x < @divTrunc(@as(i32, @intCast(W)), 6) and y < @divTrunc(@as(i32, @intCast(H)), 8);
+}
 fn onTap(x: i32, y: i32, t_ev: u64) void {
     if (sleep_phase != .awake) return;
-    const xs: i32 = @intCast(W);
-    const ys: i32 = @intCast(H);
-    const cw = @divTrunc(xs, 6);
-    const chh = @divTrunc(ys, 8);
-    if ((x < cw or x >= xs - cw) and (y < chh or y >= ys - chh)) {
+    if (!exitCorner(x, y)) {
+        corner_taps = .{ 0, 0, 0 };
+    } else {
         corner_taps[0] = corner_taps[1];
         corner_taps[1] = corner_taps[2];
         corner_taps[2] = t_ev;
         if (corner_taps[0] != 0 and corner_taps[2] - corner_taps[0] < 1_500_000) {
-            logf("corner triple tap; exiting", .{});
+            logf("exit gesture (top-left triple tap); exiting", .{});
             quit_requested = true;
             return;
         }
+        return;
     }
     const per = rowsPerPage();
     switch (screen) {

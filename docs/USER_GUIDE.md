@@ -4,7 +4,8 @@
 
 - Right outer 30% or swipe left: forward. Left outer 30% or swipe right: back.
 - Centre tap: menu. Centre double-tap: PDF zoom cycle; centre single-tap waits briefly to distinguish it.
-- Triple-tap a corner: quit and restore the stock interface.
+- Library and other list screens: triple-tap the top-left corner to quit and restore the stock interface (any other tap resets the count).
+- While reading: tap the centre to open the menu, then Quit.
 - Power button: quit by default. Idle timeout defaults to 10 minutes and exits rather than entering reader-managed sleep.
 - Contents opens a document's table of contents. The menu also offers progress, go-to and return to start.
 
