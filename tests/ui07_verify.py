@@ -88,7 +88,7 @@ quit
  (data/'settings.json').write_text('{"full_refresh":4}')
  run(data,books,'wait 200\ntap 180 260\nshot 83_library_progress\nquit\n','ui07-progress')
  assert json.loads((data/'ui07.json').read_text())['sort']==2
- assert json.loads((data/'settings.json').read_text())==dict(full_refresh=0,refresh_policy=8)
+ assert json.loads((data/'settings.json').read_text())==dict(full_refresh=0,refresh_policy=9)
  # Firmware failure turns opt-in back OFF and wakes safely; maintenance remains independent.
  logerr=run(data,books,"wait 100\nevent 1\nwait 200\nevent 16\nwait 200\nquit\n",'ui07-error')
  assert 'sleep: wake; restore GC16' in logerr

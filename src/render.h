@@ -15,6 +15,7 @@ int zr_reflowable(zr_doc *z);
 int zr_relayout(zr_doc *z, float lw, float lh, float font_pt, float margin_pt, int page);
 int zr_page_bounds(zr_doc *z, int page, float *r4);
 int zr_ink_bbox(zr_doc *z, int page, float *r4, int no_images);
+int zr_ink_bbox_flags(zr_doc *z, int page, float *r, int no_images, int flags);
 /* m6 is a page-to-screen matrix (a b c d e f). Uses a cached display list. */
 int zr_render(zr_doc *z, int page, const float *m6, unsigned char *out, int w, int h, int stride, int no_images);
 int zr_words(zr_doc *z, int page, zr_word *out, int max, char *text, int cap);

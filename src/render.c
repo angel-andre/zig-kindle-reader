@@ -226,7 +226,11 @@ static void maybe_skip_images(fz_device *dev, int no_images)
 	}
 }
 
-int zr_ink_bbox(zr_doc *z, int page, float *r, int no_images)
+static int mrc_fast(fz_context *ctx, fz_display_list *l, fz_matrix m, fz_device *dev, unsigned char *out, int stride, int w, int h, double page_area, fz_rect *bbox);
+int zr_ink_bbox_flags(zr_doc *z, int page, float *r, int no_images, int flags);
+int zr_ink_bbox(zr_doc *z, int page, float *r, int no_images) { return zr_ink_bbox_flags(z,page,r,no_images,0); }
+/* flags bit1 (clean scans): MRC scan pages take the bounding box of their 1-bit text mask, without decoding the JPEG 2000 layers. */
+int zr_ink_bbox_flags(zr_doc *z, int page, float *r, int no_images, int flags)
 {
 	fz_context *ctx = z->ctx;
 	fz_pixmap *pix = NULL;
@@ -237,6 +241,14 @@ int zr_ink_bbox(zr_doc *z, int page, float *r, int no_images)
 	fz_try(ctx) {
 		fz_display_list *l = get_list(z, page);
 		fz_rect bounds = fz_bound_display_list(ctx, l);
+		fz_rect mb;
+		if ((flags & 2) && !no_images && !fz_is_empty_rect(bounds) &&
+		    mrc_fast(ctx,l,fz_identity,NULL,NULL,0,(int)ceilf(bounds.x1),(int)ceilf(bounds.y1),(double)(bounds.x1-bounds.x0)*(bounds.y1-bounds.y0),&mb)) {
+			if (!fz_is_empty_rect(mb)) { mb.x0-=6; mb.y0-=6; mb.x1+=6; mb.y1+=6; }
+			fz_rect out = fz_is_empty_rect(mb) ? bounds : fz_intersect_rect(mb, bounds);
+			r[0]=out.x0; r[1]=out.y0; r[2]=out.x1; r[3]=out.y1;
+			break;
+		}
 		const float s = 0.5f;
 		fz_matrix m = fz_scale(s, s);
 		fz_irect ib = fz_round_rect(fz_transform_rect(bounds, m));
@@ -512,6 +524,159 @@ static void op_end_group(fz_context *ctx, fz_device *dev)
 static int op_begin_tile(fz_context *ctx, fz_device *dev, fz_rect area, fz_rect view, float xs, float ys, fz_matrix m, int id, int doc_id)
 { note_op((zr_image_device *)dev); return fz_begin_tile_tid(ctx,dev->passthrough,area,view,xs,ys,m,id,doc_id); }
 
+/* ---- v0.9.3 fast path for MRC scans (e.g. Internet Archive PDFs) ----
+ * Such a page is exactly two images: a low-resolution background (paper) and a
+ * full-page foreground whose soft mask is a 1-bit (JBIG2/bitonal) image holding
+ * the printed text. With "Clean up scanned pages" on, and only when the
+ * background is plain paper and the foreground colour is near-uniform dark, the
+ * page is drawn as white paper plus the 1-bit mask in solid black. Neither JPEG
+ * 2000 layer is decoded at full size (only tiny reduced-resolution previews for
+ * the checks). Anything else on the page (visible text, vectors, shadings, soft
+ * masks, other images, blended groups) means it is not such a page. */
+int zr_mrc_debug;
+typedef struct { fz_device super; int n, other, nclip; fz_image *clip; fz_image *img[2]; fz_matrix m[2]; float a[2]; } mrc_dev;
+static void mrc_other_(mrc_dev *d, const char *w){ if (zr_mrc_debug && !d->other) fprintf(stderr,"mrc: other=%s\n",w); d->other=1; }
+#define mrc_other(d) mrc_other_(d,__func__)
+static void mrc_fill_path(fz_context *c, fz_device *d, const fz_path *p, int eo, fz_matrix m, fz_colorspace *cs, const float *col, float a, fz_color_params cp){ mrc_other((mrc_dev*)d); }
+static void mrc_stroke_path(fz_context *c, fz_device *d, const fz_path *p, const fz_stroke_state *st, fz_matrix m, fz_colorspace *cs, const float *col, float a, fz_color_params cp){ mrc_other((mrc_dev*)d); }
+static void mrc_fill_text(fz_context *c, fz_device *d, const fz_text *t, fz_matrix m, fz_colorspace *cs, const float *col, float a, fz_color_params cp){ mrc_other((mrc_dev*)d); }
+static void mrc_stroke_text(fz_context *c, fz_device *d, const fz_text *t, const fz_stroke_state *st, fz_matrix m, fz_colorspace *cs, const float *col, float a, fz_color_params cp){ mrc_other((mrc_dev*)d); }
+static void mrc_fill_shade(fz_context *c, fz_device *d, fz_shade *sh, fz_matrix m, float a, fz_color_params cp){ mrc_other((mrc_dev*)d); }
+static void mrc_fill_image_mask(fz_context *c, fz_device *d, fz_image *img, fz_matrix m, fz_colorspace *cs, const float *col, float a, fz_color_params cp){ mrc_other((mrc_dev*)d); }
+/* MuPDF may draw a soft-masked image as a clip by its 1-bit mask; recorded, then checked against the foreground's mask. */
+static void mrc_clip_image_mask(fz_context *c, fz_device *dev, fz_image *img, fz_matrix m, fz_rect sc)
+{ mrc_dev *d=(mrc_dev*)dev; if (d->nclip++ || d->n != 1) { mrc_other(d); return; } d->clip=fz_keep_image(c,img); }
+static void mrc_begin_mask(fz_context *c, fz_device *d, fz_rect area, int lum, fz_colorspace *cs, const float *bc, fz_color_params cp){ mrc_other((mrc_dev*)d); }
+static void mrc_begin_group(fz_context *c, fz_device *d, fz_rect area, fz_colorspace *cs, int iso, int ko, int bm, float a){ if (bm != 0 || a != 1) mrc_other((mrc_dev*)d); }
+static int mrc_begin_tile(fz_context *c, fz_device *d, fz_rect area, fz_rect view, float xs, float ys, fz_matrix m, int id, int doc_id){ mrc_other((mrc_dev*)d); return 1; }
+static void mrc_fill_image(fz_context *c, fz_device *dev, fz_image *img, fz_matrix m, float a, fz_color_params cp)
+{
+    mrc_dev *d=(mrc_dev*)dev;
+    if (d->n >= 2) { d->other=1; return; }
+    d->img[d->n]=fz_keep_image(c,img); d->m[d->n]=m; d->a[d->n]=a; d->n++;
+}
+static int covers(fz_matrix m, int w, int h, double page_area)
+{
+    if (m.b != 0 || m.c != 0 || page_area <= 0) return 0;
+    fz_rect r=fz_intersect_rect(fz_transform_rect(fz_unit_rect,m),fz_make_rect(0,0,w,h));
+    return !fz_is_empty_rect(r) && (double)(r.x1-r.x0)*(r.y1-r.y0) >= 0.85*page_area;
+}
+static int lum_at(const fz_pixmap *p, int x, int y)
+{
+    const unsigned char *s=p->samples+(size_t)y*p->stride+(size_t)x*p->n;
+    int nc=p->n-p->alpha;
+    return nc>=3 ? (s[0]*77+s[1]*150+s[2]*29)>>8 : s[0];
+}
+/* Reduced-resolution luminance preview (caller frees). JPEG 2000 goes through
+ * OpenJPEG's resolution factor; other formats through MuPDF's subsampling. */
+unsigned char *zr_jpx_small_lum(fz_context *ctx, const unsigned char *data, size_t size, int target, int *ow, int *oh);
+static unsigned char *small_lum(fz_context *ctx, fz_image *img, int target, int *ow, int *oh)
+{
+    fz_compressed_buffer *cb=fz_compressed_image_buffer(ctx,img);
+    if (cb && cb->params.type == FZ_IMAGE_JPX) {
+        if (!cb->buffer) return NULL;
+        return zr_jpx_small_lum(ctx,cb->buffer->data,cb->buffer->len,target,ow,oh);
+    }
+    int w=img->w, h=img->h;
+    while (w > target*2 && h > target*2) { w/=2; h/=2; }
+    fz_pixmap *p=fz_get_pixmap_from_image(ctx,img,NULL,NULL,&w,&h);
+    unsigned char *out=malloc((size_t)p->w*p->h);
+    if (out) { for (int y=0;y<p->h;y++) for (int x=0;x<p->w;x++) out[(size_t)y*p->w+x]=(unsigned char)lum_at(p,x,y); *ow=p->w; *oh=p->h; }
+    fz_drop_pixmap(ctx,p);
+    return out;
+}
+/* Returns 1 when the page was drawn by the fast path. */
+static int mrc_fast(fz_context *ctx, fz_display_list *l, fz_matrix m, fz_device *dev, unsigned char *out, int stride, int w, int h, double page_area, fz_rect *bbox)
+{
+    mrc_dev *d=NULL; unsigned char *bg=NULL, *fg=NULL; fz_pixmap *mk=NULL; int done=0, bw=0, bh=0, fw=0, fh=0;
+    fz_var(d); fz_var(bg); fz_var(fg); fz_var(mk);
+    fz_try(ctx) {
+        d=fz_new_derived_device(ctx,mrc_dev);
+        d->super.fill_path=mrc_fill_path; d->super.stroke_path=mrc_stroke_path;
+        d->super.fill_text=mrc_fill_text; d->super.stroke_text=mrc_stroke_text;
+        d->super.fill_shade=mrc_fill_shade; d->super.fill_image=mrc_fill_image;
+        d->super.fill_image_mask=mrc_fill_image_mask; d->super.clip_image_mask=mrc_clip_image_mask;
+        d->super.begin_mask=mrc_begin_mask; d->super.begin_group=mrc_begin_group; d->super.begin_tile=mrc_begin_tile;
+        fz_run_display_list(ctx,l,&d->super,m,fz_make_rect(0,0,w,h),NULL);
+        fz_close_device(ctx,&d->super);
+        fz_image *b=d->n==2?d->img[0]:NULL, *f=d->n==2?d->img[1]:NULL;
+        if (zr_mrc_debug) { fprintf(stderr,"mrc: n=%d other=%d",d->n,d->other); for(int i=0;i<d->n;i++) fprintf(stderr," [%dx%d mask=%p bpc=%d n=%d im=%d a=%g cov=%d]",d->img[i]->w,d->img[i]->h,(void*)d->img[i]->mask,d->img[i]->mask?d->img[i]->mask->bpc:0,d->img[i]->mask?d->img[i]->mask->n:0,d->img[i]->imagemask,d->a[i],covers(d->m[i],w,h,page_area)); fprintf(stderr,"\n"); }
+        if (zr_mrc_debug && d->clip) fprintf(stderr,"mrc: clip %dx%d bpc=%d same=%d\n",d->clip->w,d->clip->h,d->clip->bpc,f&&d->clip==f->mask);
+        if (!d->other && b && f && (!d->clip || d->clip == f->mask) && !b->mask && !b->imagemask && !f->imagemask && f->mask && f->mask->bpc == 1 && f->mask->n == 1 &&
+            d->a[0] == 1 && d->a[1] == 1 && covers(d->m[0],w,h,page_area) && covers(d->m[1],w,h,page_area)) {
+            /* background must be plain paper: tight luminance spread */
+            bg=small_lum(ctx,b,96,&bw,&bh);
+            int hist[256]={0}, n=0;
+            if (bg) for (int i=0;i<bw*bh;i++) { hist[bg[i]]++; n++; }
+            int mode=0; for (int v=1;v<256;v++) if (hist[v]>hist[mode]) mode=v;
+            int lo=0,acc=0; while (lo<255 && (acc+=hist[lo])<n*2/100) lo++;
+            int hi=255; acc=0; while (hi>0 && (acc+=hist[hi])<n*2/100) hi--;
+            int near=0; for (int v=mode-20; v<=mode+20; v++) if (v>=0&&v<256) near+=hist[v];
+            int paper = n > 0 && mode >= 48 && near >= n*80/100 && hi-lo <= 90;
+            int dark=0, inkn=0, p90=0, p50=0;
+            if (paper) {
+                /* foreground colour where the mask has ink: must be near-uniform dark */
+                mk=fz_get_pixmap_from_image(ctx,f->mask,NULL,NULL,NULL,NULL);
+                fg=small_lum(ctx,f,160,&fw,&fh);
+                int lh[256]={0};
+                if (fg) for (int y=0;y<fh;y++) for (int x=0;x<fw;x++) {
+                    int mx=(int)((x+0.5)*mk->w/fw), my=(int)((y+0.5)*mk->h/fh);
+                    if (mk->samples[(size_t)my*mk->stride+(size_t)mx*mk->n] > 127) { lh[fg[(size_t)y*fw+x]]++; inkn++; }
+                }
+                p50=0; acc=0; while (p50<255 && (acc+=lh[p50])<inkn/2) p50++;
+                p90=0; acc=0; while (p90<255 && (acc+=lh[p90])<inkn*90/100) p90++;
+                dark = inkn == 0 || p50 <= 110;  /* mostly dark print; otherwise (e.g. a colour picture in the foreground) render normally */
+                if (zr_mrc_debug) fprintf(stderr,"mrc: ink_p90=%d inkn=%d\n",p90,inkn);
+            }
+            if (zr_mrc_debug) fprintf(stderr,"mrc: bg %dx%d fg %dx%d mode=%d near=%.2f spread=%d paper=%d dark=%d\n",bw,bh,fw,fh,mode,(double)near/n,hi-lo,paper,dark);
+            if (paper && dark && bbox) {
+                /* ink bounding box from the 1-bit mask (for trimmed views), without drawing */
+                int x0=mk->w, y0=mk->h, x1=-1, y1=-1;
+                for (int y=0;y<mk->h;y++) { const unsigned char *row=mk->samples+(size_t)y*mk->stride;
+                    for (int x=0;x<mk->w;x++) if (row[(size_t)x*mk->n] > 127) { if (x<x0) x0=x; if (x>x1) x1=x; if (y<y0) y0=y; if (y>y1) y1=y; } }
+                if (x1 >= x0 && y1 >= y0) *bbox=fz_transform_rect(fz_make_rect((float)x0/mk->w,(float)y0/mk->h,(float)(x1+1)/mk->w,(float)(y1+1)/mk->h),d->m[1]);
+                else *bbox=fz_empty_rect;
+                done=1;
+            } else if (paper && dark) {
+                float black=0;
+                fz_fill_image_mask(ctx,dev,f->mask,d->m[1],fz_device_gray(ctx),&black,1,fz_default_color_params);
+                fz_close_device(ctx,dev);
+                /* Keep light foreground areas light (e.g. a pale box behind dark words):
+                 * ink is scaled by the foreground darkness, from a smoothed preview.
+                 * Mapped between the page's ink level and its paper level. */
+                int lo_t=p50+(mode-p50)*50/100, hi_t=p50+(mode-p50)*85/100;
+                if (fg && inkn && mode > p50+16 && p90 > lo_t-4) {
+                    fz_rect r=fz_intersect_rect(fz_transform_rect(fz_unit_rect,d->m[1]),fz_make_rect(0,0,w,h));
+                    fz_irect ir=fz_round_rect(r); fz_rect fr=fz_transform_rect(fz_unit_rect,d->m[1]);
+                    unsigned char lut[256];
+                    for (int v=0;v<256;v++) lut[v]= v<=lo_t ? 0 : v>=hi_t ? 255 : (unsigned char)((v-lo_t)*255/(hi_t-lo_t));
+                    for (int y=ir.y0;y<ir.y1;y++) {
+                        unsigned char *row=out+(size_t)y*stride;
+                        double fy=((y+0.5)-fr.y0)/(fr.y1-fr.y0)*fh-0.5; if (fy<0) fy=0; if (fy>fh-1) fy=fh-1;
+                        int y0=(int)fy, y1=y0+1<fh?y0+1:y0; int wy=(int)((fy-y0)*256);
+                        for (int x=ir.x0;x<ir.x1;x++) {
+                            if (row[x]==255) continue;
+                            double fx=((x+0.5)-fr.x0)/(fr.x1-fr.x0)*fw-0.5; if (fx<0) fx=0; if (fx>fw-1) fx=fw-1;
+                            int x0=(int)fx, x1=x0+1<fw?x0+1:x0; int wx=(int)((fx-x0)*256);
+                            const unsigned char *a=fg+(size_t)y0*fw, *b2=fg+(size_t)y1*fw;
+                            int top=a[x0]*(256-wx)+a[x1]*wx, bot2=b2[x0]*(256-wx)+b2[x1]*wx;
+                            int t=lut[(top*(256-wy)+bot2*wy)>>16];
+                            row[x]=(unsigned char)(255-(255-row[x])*(255-t)/255);
+                        }
+                    }
+                }
+                done=1;
+            }
+        }
+    }
+    fz_always(ctx) {
+        if (d) { for (int i=0;i<d->n;i++) fz_drop_image(ctx,d->img[i]); fz_drop_image(ctx,d->clip); fz_drop_device(ctx,&d->super); }
+        free(bg); free(fg); fz_drop_pixmap(ctx,mk);
+    }
+    fz_catch(ctx) { fz_report_error(ctx); done=0; }
+    return done;
+}
+
 int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *out, int w, int h, int stride,
     int no_images, int image_dither, zr_render_stats *stats)
 {
@@ -520,7 +685,8 @@ int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *ou
 	fz_device *dev = NULL;
     zr_image_device *images = NULL;
     if (stats) memset(stats,0,sizeof *stats);
-	int rc = 0, rerender = 0;
+	int rc = 0, rerender = 0, mrc = 0;
+	fz_var(mrc);
 	fz_var(pix);
 	fz_var(dev);
     fz_var(images);
@@ -546,8 +712,11 @@ int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *ou
         }
         maybe_skip_images(dev, no_images);
         fz_device *draw = images ? &images->super : dev;
+        if (images && images->clean && mrc_fast(ctx,l,m,dev,out,stride,w,h,images->page_area,NULL)) {
+            images->cleaned=1; images->image_count=2; mrc=1; /* drawn as text ink: no image area */
+        } else
         fz_run_display_list(ctx, l, draw, m, fz_make_rect(0, 0, w, h), &z->cookie);
-        if (images) { finish_page(images); rerender = images->rerender; }
+        if (images && !mrc) { finish_page(images); rerender = images->rerender; }
         fz_close_device(ctx, draw);
         if (stats && images) {
             size_t area=0;
@@ -811,3 +980,6 @@ int zr_pagination_pending(zr_doc *z){return z->pending;}
 zr_doc *zr_open_worker(const char *path,float w,float h,float em,float margin,float spacing,int (*progress)(int)){
  pagination_progress=progress;zr_doc *z=open_style(path,w,h,em,margin,spacing,1,0);pagination_progress=NULL;return z;
 }
+
+/* v0.9.3 reduced-resolution JPEG 2000 previews (needs MuPDF's OpenJPEG headers on the include path) */
+#include "jpxsmall.c"

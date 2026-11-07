@@ -9,7 +9,7 @@ mkdir -p out
 build() {
 	MUB=$MU/build/$3-release
 	$ZIG build-exe src/zreader.zig src/render.c src/dictionary.c src/platform07.c src/pagecache.c src/upload.c -lc -target $1 -mcpu $2 -O ReleaseFast -fstrip \
-		-I src -I $MU/include -cflags -Os -- $MUB/libmupdf.a $MUB/libmupdf-third.a -static -femit-bin=$4
+		-I src -I $MU/include -I $MU/thirdparty/openjpeg/src/lib/openjp2 -cflags -Os -- $MUB/libmupdf.a $MUB/libmupdf-third.a -static -femit-bin=$4
 }
 build arm-linux-musleabihf cortex_a53 armhf out/zreader
 if [ -d $MU/build/hostmusl-release ]; then build x86_64-linux-musl baseline hostmusl out/zreader-host; fi

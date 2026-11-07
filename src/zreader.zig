@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.9.2";
+const VERSION = "0.9.3";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 
 // ---------------- C ----------------
@@ -57,6 +57,7 @@ extern fn zr_anchor_migrate(z: *ZrDoc, page: c_int, quote: [*]const u8, len: c_i
 extern fn zr_relayout(z: *ZrDoc, lw: f32, lh: f32, font: f32, margin: f32, page: c_int) c_int;
 extern fn zr_page_bounds(z: *ZrDoc, page: c_int, r: *[4]f32) c_int;
 extern fn zr_ink_bbox(z: *ZrDoc, page: c_int, r: *[4]f32, no_images: c_int) c_int;
+extern fn zr_ink_bbox_flags(z: *ZrDoc, page: c_int, r: *[4]f32, no_images: c_int, flags: c_int) c_int;
 extern fn zr_render(z: *ZrDoc, page: c_int, m: *const [6]f32, out: [*]u8, w: c_int, h: c_int, stride: c_int, no_images: c_int) c_int;
 const ZrRenderStats = extern struct { image_coverage: f32 = 0, image_count: c_int = 0, cleaned: c_int = 0 };
 extern fn zr_render_with_stats(z: *ZrDoc, page: c_int, m: *const [6]f32, out: [*]u8, w: c_int, h: c_int, stride: c_int, no_images: c_int, image_dither: c_int, stats: *ZrRenderStats) c_int;
@@ -809,9 +810,11 @@ fn loadRefreshSetting() void {
     const data = readFile(p) orelse return;
     defer alloc.free(data);
     // v0.8 migrates every existing periodic setting OFF exactly once.
-    if ((jsonNum(data, "refresh_policy") orelse 0) < 8) {
+    // v0.9.3 resets it once more (policy 9): the menu button was easy to confuse
+    // with "Clean up scanned pages" and periodic flashes break the default rule.
+    if ((jsonNum(data, "refresh_policy") orelse 0) < 9) {
         opts.full_refresh = 0;
-        _ = writeFileAtomic(p, "{\"full_refresh\":0,\"refresh_policy\":8}\n");
+        _ = writeFileAtomic(p, "{\"full_refresh\":0,\"refresh_policy\":9}\n");
         return;
     }
     const n = jsonNum(data, "full_refresh") orelse return;
@@ -827,7 +830,7 @@ fn cycleRefreshSetting() void {
     var p: [1200]u8 = undefined;
     var b: [80]u8 = undefined;
     const path = std.fmt.bufPrint(&p, "{s}/settings.json", .{opts.data}) catch return;
-    const data = std.fmt.bufPrint(&b, "{{\"full_refresh\":{d},\"refresh_policy\":8}}\n", .{opts.full_refresh}) catch return;
+    const data = std.fmt.bufPrint(&b, "{{\"full_refresh\":{d},\"refresh_policy\":9}}\n", .{opts.full_refresh}) catch return;
     if (!writeFileAtomic(path, data)) toast("Could not save refresh setting", .{});
     markDirty(bottomPanel(), WF_GL16);
 }
@@ -1166,7 +1169,7 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
         const t0 = nowUs();
         var rc: c_int = 0;
         if (!have_trim) {
-            rc = if (use_trim) zr_ink_bbox(doc, job.p, &r, ni) else zr_page_bounds(doc, job.p, &r);
+            rc = if (use_trim) zr_ink_bbox_flags(doc, job.p, &r, ni, imageFlags()) else zr_page_bounds(doc, job.p, &r);
         }
         const geometry = viewGeometry(r, mode, base_width, job.step, pan_x, pan_y);
         const m = geometry.m;
@@ -1650,7 +1653,7 @@ fn closeBook() void {
 fn renderFirstRaster(doc: *ZrDoc) void {
     var r: [4]f32 = .{ 0, 0, 612, 792 };
     const ni: c_int = @intFromBool(opts.no_images);
-    const rc = if (pool.trim) zr_ink_bbox(doc, pool.cur, &r, ni) else zr_page_bounds(doc, pool.cur, &r);
+    const rc = if (pool.trim) zr_ink_bbox_flags(doc, pool.cur, &r, ni, imageFlags()) else zr_page_bounds(doc, pool.cur, &r);
     const slot = &pool.slots[0];
     slot.geometry = viewGeometry(r, pool.view, pool.base_width, pool.step, pool.pan_x, pool.pan_y);
     slot.m = slot.geometry.m;
@@ -2702,7 +2705,7 @@ fn drawMenu() void {
 
 fn drawRefreshButton() void {
     var b: [80]u8 = undefined;
-    const label = if (opts.full_refresh == 0) "Cleanup: off" else std.fmt.bufPrint(&b, "Cleanup: every {d} pages", .{opts.full_refresh}) catch "Full refresh";
+    const label = if (opts.full_refresh == 0) "Full refresh: off" else std.fmt.bufPrint(&b, "Full refresh: every {d} pages", .{opts.full_refresh}) catch "Full refresh";
     button(refreshButton(), label, false);
 }
 fn drawPopup() void {
@@ -3934,7 +3937,7 @@ fn auditRefresh() !u8 {
     while (page < count) : (page += 1) {
         var r: [4]f32 = undefined;
         const ni: c_int = @intFromBool(opts.no_images);
-        const rc = if (zr_is_pdf(doc) != 0) zr_ink_bbox(doc, page, &r, ni) else zr_page_bounds(doc, page, &r);
+        const rc = if (zr_is_pdf(doc) != 0) zr_ink_bbox_flags(doc, page, &r, ni, imageFlags()) else zr_page_bounds(doc, page, &r);
         if (rc != 0) return 1;
         const m = fitMatrix(r);
         var rs: ZrRenderStats = .{};
@@ -4907,7 +4910,7 @@ fn jumpSearchHit(k: usize, t: u64) void {
     if (book.is_pdf and pool.view != .page and hit.nq > 0) {
         var r: [4]f32 = undefined;
         const trim = viewUsesTrim(book.is_pdf, pool.trim, pool.view, pool.base_width);
-        const rc = if (trim) zr_ink_bbox(book.doc, hit.page, &r, @intFromBool(pool.no_images)) else zr_page_bounds(book.doc, hit.page, &r);
+        const rc = if (trim) zr_ink_bbox_flags(book.doc, hit.page, &r, @intFromBool(pool.no_images), imageFlags()) else zr_page_bounds(book.doc, hit.page, &r);
         if (rc == 0) {
             const g = viewGeometry(r, pool.view, pool.base_width, 0, 0, 0);
             const q = hit.q[0];

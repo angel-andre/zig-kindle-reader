@@ -37,7 +37,7 @@ The Settings button (library and reader menu; called Light / Sleep before 0.9.1)
 
 ## Refresh and dark mode
 
-Normal text uses REAGL. Heavy images, substantial dark/light transitions and menu/library context changes request GC16 FULL. Refresh Off/4/8/16 controls periodic text cleans (default Off since 0.8.0). Scanned pages with grey paper tone use REAGL; only real photos, covers and context changes get GC16; Off does not disable heavy/context safety cleans. Hardware dark mode is inherited, never toggled by the reader. Host previews do not simulate it.
+Normal text uses REAGL. Heavy images, substantial dark/light transitions and menu/library context changes request GC16 FULL. The reader-menu Full refresh button (Off/4/8/16; called “Cleanup” before 0.9.3) controls periodic full refreshes of text pages. It is Off by default and was reset to Off once in 0.8.0 and again in 0.9.3. Scanned pages with grey paper tone use REAGL; only real photos, covers and context changes get GC16; Off does not disable heavy/context safety cleans. Hardware dark mode is inherited, never toggled by the reader. Host previews do not simulate it.
 
 ## Your data
 
@@ -71,6 +71,8 @@ Books, notes, reading positions and settings are not affected.
 Library → Settings → **Clean up scanned pages: ON/OFF** (ON by default). On scanned books (photographed or scanned paper, often yellowed or sepia) it turns the paper white and the print dark, removing the blotchy gray bands the paper tint otherwise causes on the 16-gray screen.
 
 It only affects scanned pages: a page whose content is one full-page image (optionally with further image layers and invisible OCR text). Any page with real text, vector drawings or a smaller photo or figure — every EPUB and normal digital PDF — is drawn exactly as before, whether the setting is on or off. Turn it off if you prefer the original paper tone of a scan. The setting is remembered; `--no-clean-scans` / `--clean-scans` override it from the command line.
+
+Since 0.9.3 this also speeds up scanned books from the Internet Archive and similar sources, where a page is a background image plus a full-page text layer with a 1-bit mask. Such pages are drawn as white paper with the text in black, without decoding the large JPEG 2000 images, so page turns are much faster. If a page's background holds a picture, or the text layer is not mostly dark, the page is drawn normally. With the setting off, these books look and behave as before (slower).
 
 ## Upload books over Wi-Fi (0.9.1)
 

@@ -13,7 +13,7 @@ with tempfile.TemporaryDirectory(dir=R/'tests',prefix='v08-ui-') as t:
  assert len(modes)==len(submits)==16,(modes,submits)
  assert [x[2] for x in modes]==['2','2']+['4']*14,modes
  assert submits==[x[2] for x in modes]
- assert json.loads((data/'settings.json').read_text())==dict(full_refresh=0,refresh_policy=8)
+ assert json.loads((data/'settings.json').read_text())==dict(full_refresh=0,refresh_policy=9)
  state=json.loads(next((data/'state').glob('*.json')).read_text());assert 1700000000<state['opened']<3000000000
  assert 'render_errors=0' in log
  print('PASS actual pump: opening + cover exit = 2 GC16; next 14 turns = exactly 14 REAGL, no extra submits, no periodic clean; old default 8 migrated OFF; timestamp positive')
