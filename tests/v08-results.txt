@@ -1,0 +1,4 @@
+PASS actual pump: opening + cover exit = 2 GC16; next 14 turns = exactly 14 REAGL, no extra submits, no periodic clean; old default 8 migrated OFF; timestamp positive
+PASS 4400-page synthetic EPUB: first page precedes full pagination; 8 immediate early turns, one update each
+PASS 372-page audit: 353 REAGL, 19 cleans limited to opening, cover departure and photo insert transitions
+PASS storage/type/size + battery preview and scan-D turn-log PNGs written

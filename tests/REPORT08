@@ -1,0 +1,111 @@
+ZREADER 0.8.0 — LOCAL BUILD / TEST REPORT
+
+Scope: only /workspace/kindle; no Kindle, Mac, repository, commit, upload or deployment access.
+ARM static arm-linux-musleabihf / cortex_a53; MuPDF 1.28.6. Runtime pause list unchanged:
+awesome volumd blanket Xorg. Own process core dumps disabled in launcher and C time64 helper setup.
+Hardware inversion/night-mode settings untouched.
+
+FLICKER
+The old imageHeavy rule treated grey photographed paper as heavy ink: scan-D's
+image coverage is ~0.8, background adds ~0.3-0.4 average ink even on ordinary text.
+Baseline all 372/372 pages chose GC16 FULL. A separate periodic default cleaned
+ordinary books every eight turns. Neither requires a double/progressive draw:
+the actual pump already submitted once per rendered page.
+New paper-relative broad tonal occupancy distinguishes text scans from real photos.
+All 372-page audit: 353 REAGL, 19 GC16 (opening, cover departure, photo insert
+pages 179-194 and photo departures). Page 179 was visually checked: real photos.
+Actual UI script: opening plus 15 turns = 16 submissions before AND after.
+Before: 16 GC16. After: 2 GC16 for opening/cover departure, then exactly 14 REAGL.
+REAGL uses the driver's FULL update flag but is not a flashing GC16 cleanup.
+No independent battery update; its pixels are composed into the same raster.
+Existing periodic settings migrate OFF once (refresh_policy 8); future explicit
+menu choices persist. No cleanup label is drawn on the reading canvas.
+digital-big actual UI pages 1/2/3/4 remain GC16/GC16/REAGL/REAGL; cover-overlay
+close still cleans. Image-only clipped dithering and text-AA pixel tests pass.
+
+COVERS
+v0.7 already contained a disk cache, but serial whole-EPUB pagination on a miss
+blocked queued disk hits behind it. v0.8 has separate disk-read/generation workers,
+page-one/first-spine-only extraction, immediate title/type placeholders, progressive
+fill and next-page prefetch. Cache key: path+size+nanosecond mtime+format version.
+32 RAM thumbnails (~384 KiB). 96x128 8-bit disk thumbnails, 12,288 bytes each.
+Persistent cover cache <=10 MiB, plus one <=12 KiB temporary raster.
+Seven large EPUB cold covers: 6415 ms before, 117 ms after (box, sequential).
+Seven cached covers ready in 21 ms with renderer explicitly forbidden.
+A cached hit stays 20 ms even while another child deliberately takes two seconds.
+Changed file size/mtime invalidates identity; cap eviction and symlink preservation pass.
+
+OPENING
+Full EPUB pagination formerly happened before display, with redundant original/styled
+layouts in the main document and two workers. Current-chapter anchor indexing was
+also on the initial path even with no saved anchor/notes. PDF file open itself is
+sub-millisecond here; image decode/rasterization dominates scan-D (~226 ms).
+v0.8 reuses the main document for the first raster, defers full cold EPUB pagination,
+streams available chapter counts, renders early requested pages while counting,
+uses one EPUB worker, cancels abandoned pagination at chapter boundaries and
+cancels stale raster work. Persistent typography-keyed MuPDF accelerators: at most
+128 files of <=16 KiB (~2 MiB). No upfront anchor extraction without a saved anchor
+or legacy annotation migration. 80-chapter synthetic fixture is 4,400 pages in the
+probe layout, 5,040 at the app's styled layout. Eight early turns pass while counting.
+
+Box first submit from process launch (warm OS filesystem cache, fresh application data):
+                       v0.7        v0.8 cold       v0.8 warm
+scan-D              252 ms      230 ms          255 ms
+digital-big             124 ms       90 ms           90 ms
+digital-small                  53 ms       47 ms           45 ms
+Large synthetic EPUB   >7738 ms      20 ms           43 ms
+Baseline EPUB had NO frame within its 6-second post-open observation window;
+>7738 ms is a lower bound, not a measured eventual completion time.
+The existing device digital-small render p50 is 21,870 us (53 jobs), versus 3,640 us
+in the host baseline sample (5 jobs): approximately 6x CPU factor, different page
+samples, NOT a controlled device benchmark. Using 6x plus ~250 ms panel time gives
+rough v0.8 estimates: scan-D 1.6-1.8 s, digital-big 0.8 s, digital-small 0.5 s,
+synthetic EPUB 0.4-0.5 s, cached library ~0.4 s plus text-composition overhead.
+Use broad 3-8x uncertainty; on-device under-2-second opening is not verified.
+Actual 10-20-second PDF opening stalls were NOT reproduced on this box.
+
+STORAGE / BATTERY / STATE
+Library uses statvfs(/mnt/us), shows free/total and all scanned book-file bytes,
+plus per-row PDF/EPUB, size and relative folder. Books and documents are scanned.
+Read-only powerd battLevel runs in the existing command worker at most every
+three minutes. Bar/percentage appear top-right in library and reader; --% when
+unknown. Mock asserts zero firmware writes and 76% readback. No sysfs writes.
+The old direct Zig extern time() linked the legacy ARM time32 symbol with an
+incorrect 64-bit return expectation. C wrapper emits a branch to __time64 in ARM
+assembly; all new stamps are int64. Legacy opened=-2500945052 repairs to
+1794022244. Positive old values remain readable. State JSON timestamp test passes.
+
+TESTS
+All 27 Zig unit tests pass. C core: exact selection/word boxes, 54 typography
+layouts plus split highlights, portable anchors, search, 10,000 dictionary lookups
+and 16 malformed dictionary cases pass. Existing functional suites pass:
+verify, view06_verify, epub06_verify, dictionary06_verify, search06_verify,
+export06_verify, maintenance06_verify, refresh_verify, platform07_verify,
+ui07_verify. New cache08_verify and v08_verify pass. Old expectations changed only
+for intentional policy migration, photo-only overlay cleanup and the battery HUD
+rectangle in a raw-render reference comparison. Source/privacy checks pass.
+
+PREVIEWS (host simulation, not photographs of the device)
+shots/86_library_storage_battery_mock_dark.png — illustrative library data,
+  storage and 76% battery; values are fixture inputs, not live device readings.
+shots/87_scan_reader_battery_dark.png — actual scan-D raster plus mocked
+  battery, inverted only for preview of inherited hardware dark mode.
+shots/89_scan_turn_log.png — measured per-turn before/after modes/counts.
+Do not add private-book raster screenshots to a shared repository. The source
+package includes only the illustrative library and turn-log previews.
+
+SIZE / PACKAGING
+Installed runtime file bytes: 21183503 (20.202 MiB), excluding generated
+notes, caches and existing books. Dictionary unchanged. Runtime/source tar layouts
+match the prior package. SHA256 values are in ../stage/zr08.sha256.
+
+UNVERIFIED / REMAINING
+No physical-device checks: ghosting cleanup effectiveness, battery LIPC behavior,
+real statvfs values, e-ink latency and power-button/suspend integration need testing.
+The actual Charles Fort EPUB was unavailable; the larger synthetic fixture was used.
+IMPORTANT: first-use cold EPUBs with an existing late saved position/anchor or
+legacy annotation migration can still require synchronous full pagination before
+first display. The next open uses the accelerator. This case is not fully solved.
+A single unusually huge HTML chapter can still delay open or cancellation until
+that chapter layout finishes. The photo detector is a heuristic, not OCR.
+No claim that every 10-20-second device opening stall has been eliminated.

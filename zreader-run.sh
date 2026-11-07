@@ -1,6 +1,7 @@
 #!/bin/sh
 # Standalone launcher: Amazon UI paused the way koreader.sh does it, SSH kept reachable.
 # Usage: zreader-run.sh [zreader options] [book | @library | @last | @epub]
+ulimit -c 0 2>/dev/null || :
 DIR=/mnt/us/zreader
 LOG=/mnt/us/zreader.log
 ERR=/mnt/us/zreader-stderr.log

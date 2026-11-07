@@ -21,6 +21,7 @@ static void drop_anchor_index(zr_doc *z)
 }
 void zr_set_spacing(zr_doc *z, float spacing)
 {
+    if (!z->styled || z->spacing != spacing) z->lw = -1;
     z->styled = 1;
     z->spacing = spacing >= 1.0f && spacing <= 2.0f ? spacing : 1.4f;
 }

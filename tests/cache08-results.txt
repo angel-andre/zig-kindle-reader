@@ -1,0 +1,15 @@
+PASS miss cover readiness 80 ms
+PASS hit cover readiness 20 ms
+PASS blocked cover readiness 20 ms
+PASS miss cover readiness 80 ms
+PASS miss cover readiness 81 ms
+PASS miss cover readiness 81 ms
+PASS miss cover readiness 80 ms
+PASS miss cover readiness 60 ms
+PASS miss cover readiness 81 ms
+PASS miss cover readiness 80 ms
+PASS cached page: 7 covers ready in 21 ms, no renders
+PASS changed file invalidates disk thumbnail identity
+PASS read-only cached battLevel 76%
+PASS persistent 96x128 grayscale hit, no renderer on hit, changed-size/mtime miss, hits never wait behind slow subprocess
+PASS battery polling issues zero firmware writes

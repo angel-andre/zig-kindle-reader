@@ -1,0 +1,140 @@
+[
+  {
+    "book": "scan-d.pdf",
+    "version": "v07",
+    "cache": "cold app cache",
+    "first_submit_ms": 252.019,
+    "no_frame_lower_bound_ms": null,
+    "profile": []
+  },
+  {
+    "book": "scan-d.pdf",
+    "version": "v08",
+    "cache": "cold app cache",
+    "first_submit_ms": 230.334,
+    "no_frame_lower_bound_ms": null,
+    "profile": [
+      "open profile: close_previous_us=6",
+      "open profile: load+pagination_us=638",
+      "open profile: first_raster_us=225941 first_page_ready_us=226596"
+    ]
+  },
+  {
+    "book": "scan-d.pdf",
+    "version": "v08",
+    "cache": "warm",
+    "first_submit_ms": 255.026,
+    "no_frame_lower_bound_ms": null,
+    "profile": [
+      "open profile: close_previous_us=6",
+      "open profile: load+pagination_us=823",
+      "open profile: first_raster_us=250553 first_page_ready_us=251408"
+    ]
+  },
+  {
+    "book": "digital-big.pdf",
+    "version": "v07",
+    "cache": "cold app cache",
+    "first_submit_ms": 123.549,
+    "no_frame_lower_bound_ms": null,
+    "profile": []
+  },
+  {
+    "book": "digital-big.pdf",
+    "version": "v08",
+    "cache": "cold app cache",
+    "first_submit_ms": 90.203,
+    "no_frame_lower_bound_ms": null,
+    "profile": [
+      "open profile: close_previous_us=4",
+      "open profile: load+pagination_us=3221",
+      "open profile: first_raster_us=83711 first_page_ready_us=86956"
+    ]
+  },
+  {
+    "book": "digital-big.pdf",
+    "version": "v08",
+    "cache": "warm",
+    "first_submit_ms": 90.078,
+    "no_frame_lower_bound_ms": null,
+    "profile": [
+      "open profile: close_previous_us=4",
+      "open profile: load+pagination_us=3159",
+      "open profile: first_raster_us=83801 first_page_ready_us=86982"
+    ]
+  },
+  {
+    "book": "digital-small1.pdf",
+    "version": "v07",
+    "cache": "cold app cache",
+    "first_submit_ms": 53.354,
+    "no_frame_lower_bound_ms": null,
+    "profile": []
+  },
+  {
+    "book": "digital-small1.pdf",
+    "version": "v08",
+    "cache": "cold app cache",
+    "first_submit_ms": 46.528,
+    "no_frame_lower_bound_ms": null,
+    "profile": [
+      "open profile: close_previous_us=4",
+      "open profile: load+pagination_us=304",
+      "open profile: first_raster_us=42934 first_page_ready_us=43262"
+    ]
+  },
+  {
+    "book": "digital-small1.pdf",
+    "version": "v08",
+    "cache": "warm",
+    "first_submit_ms": 45.478,
+    "no_frame_lower_bound_ms": null,
+    "profile": [
+      "open profile: close_previous_us=2",
+      "open profile: load+pagination_us=286",
+      "open profile: first_raster_us=42054 first_page_ready_us=42358"
+    ]
+  },
+  {
+    "book": "large08.epub",
+    "version": "v07",
+    "cache": "cold app cache",
+    "first_submit_ms": null,
+    "no_frame_lower_bound_ms": 7738.209,
+    "profile": []
+  },
+  {
+    "book": "large08.epub",
+    "version": "v08",
+    "cache": "cold app cache",
+    "first_submit_ms": 20.141,
+    "no_frame_lower_bound_ms": null,
+    "profile": [
+      "open profile: close_previous_us=6",
+      "open profile: load+pagination_us=12205",
+      "open profile: first_raster_us=4186 first_page_ready_us=16419"
+    ]
+  },
+  {
+    "book": "large08.epub",
+    "version": "v08",
+    "cache": "warm",
+    "first_submit_ms": 42.735,
+    "no_frame_lower_bound_ms": null,
+    "profile": [
+      "open profile: close_previous_us=3",
+      "open profile: load+pagination_us=468",
+      "open profile: first_raster_us=3943 first_page_ready_us=40027"
+    ]
+  },
+  {
+    "book": "7 large EPUB covers (serial cold generation)",
+    "version": "v07",
+    "milliseconds": 6415.437
+  },
+  {
+    "book": "7 large EPUB covers (serial cold generation)",
+    "version": "v08",
+    "milliseconds": 116.986
+  }
+]

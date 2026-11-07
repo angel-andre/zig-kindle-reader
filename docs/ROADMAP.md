@@ -17,3 +17,10 @@ No comparison numbers are available. Use the same physical PW6, book bytes, view
 Measure cold launch/book open, uncached and prefetched page turns, rapid tap bursts, text-heavy versus image-heavy pages, PDF zoom/pan, EPUB reflow, annotation/search latency, peak memory, storage/cache growth and separate battery sessions. Distinguish input-to-render from input-to-panel completion. Repeat runs and report median and tail latency with sample counts; label cache warm/cold states. Document missing measurements rather than extrapolating host timings or nominal panel waveform durations.
 
 Retain anonymized raw measurements and a reproducible protocol before asserting an advantage. Host refresh-policy counts are not comparative performance benchmarks.
+
+## Status after 0.8.0
+
+- KOReader comparison benchmark: still not measured.
+- v0.8 on-device opening and cover times are estimates scaled from host measurements (see tests/REPORT08), not device measurements.
+- First cold open of a large EPUB with a deep saved position can still be slow once; later opens use the pagination cache.
+- Power-button sleep and light controls still need physical validation.

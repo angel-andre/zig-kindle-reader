@@ -28,7 +28,7 @@ Use `/mnt/us/Books` and PDF/EPUB filenames; reset Folder to All. Placeholder cov
 
 ## Ghosting / dark mode
 
-Hardware dark mode is intentional and must stay unchanged. Use Refresh for a full clean or change periodic refresh to 4/8/16. Off still allows heavy/context cleans. Physical e-ink efficacy is not proved by host PNGs. Do not write framebuffer inversion flags, procfs driver settings or backlight sysfs.
+Hardware dark mode is intentional and must stay unchanged. Use Refresh for a full clean or optionally turn on periodic refresh (4/8/16) in the menu. Since 0.8.0 periodic refresh is Off by default (existing settings migrate to Off once) and no refresh label is drawn on the page. Off still allows heavy/context cleans. Physical e-ink efficacy is not proved by host PNGs. Do not write framebuffer inversion flags, procfs driver settings or backlight sysfs.
 
 ## Drop-cap overlap
 

@@ -45,3 +45,10 @@ int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *ou
     int w, int h, int stride, int no_images, int image_dither, zr_render_stats *stats);
 
 #endif
+
+void zr_layout_cache(const char *data);
+zr_doc *zr_open_style(const char *,float,float,float,float,float);
+zr_doc *zr_open_cover(const char *);
+
+zr_doc *zr_open_initial(const char *,float,float,float,float,float);
+void zr_page_count_hint(zr_doc *,int);

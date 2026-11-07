@@ -1,6 +1,10 @@
 > STAGING ONLY: strict all-address-literals privacy scan is not yet clear for the binary. See docs/PRIVACY_REVIEW.md. No upload has been performed.
 
-# Original 0.7.0 runtime
+# 0.8.0 runtime (current)
+
+`zr08.tgz` (about 8.2 MiB) is the 0.8.0 runtime installed on the reference device. SHA-256: `4a9027bd8bac4cc3ac94d5c8337367c0a3d7a648589e2c565b06ec111c884016`. `installed-sizes-08.json` records its build sizes.
+
+# Original 0.7.0 runtime (rollback)
 
 `zr07.tgz` is the original runtime artifact supplied for the recorded installation. The executable inside is unchanged. It is about 8.23 MiB compressed; individual files are below the 100 MB GitHub limit.
 

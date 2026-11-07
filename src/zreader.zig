@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.7.0";
+const VERSION = "0.8.0";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 
 // ---------------- C ----------------
@@ -16,6 +16,19 @@ extern fn zrd_open(path: [*:0]const u8) c_int;
 extern fn zrd_close() void;
 extern fn zrd_define(word: [*]const u8, len: c_int, lemma: [*]u8, lemma_cap: c_int, out: [*]u8, cap: c_int) c_int;
 extern fn zr_open(path: [*:0]const u8, lw: f32, lh: f32, font: f32, margin: f32) ?*ZrDoc;
+extern fn zr_open_style(path: [*:0]const u8, lw: f32, lh: f32, font: f32, margin: f32, spacing: f32) ?*ZrDoc;
+extern fn zr_open_worker(path: [*:0]const u8, lw: f32, lh: f32, font: f32, margin: f32, spacing: f32, progress: *const fn (c_int) callconv(.c) c_int) ?*ZrDoc;
+extern fn zr_open_initial(path: [*:0]const u8, lw: f32, lh: f32, font: f32, margin: f32, spacing: f32) ?*ZrDoc;
+extern fn zr_pagination_pending(z: *ZrDoc) c_int;
+extern fn zr_page_count_hint(z: *ZrDoc, pages: c_int) void;
+extern fn zr_layout_cache(data: [*:0]const u8) void;
+extern fn zr_no_core() void;
+extern fn zr_battery() c_int;
+extern fn zr_file_size(path: [*:0]const u8) u64;
+extern fn zr_storage(path: [*:0]const u8, free: *u64, total: *u64) c_int;
+extern fn zr_thumbs_focus() void;
+extern fn zr_cancel(z: *ZrDoc) void;
+extern fn zr_reset_cancel(z: *ZrDoc) void;
 extern fn zr_close(z: *ZrDoc) void;
 extern fn zr_page_count(z: *ZrDoc) c_int;
 extern fn zr_is_pdf(z: *ZrDoc) c_int;
@@ -58,9 +71,9 @@ fn spawn(t: *c_ulong, f: *const fn (?*anyopaque) callconv(.c) ?*anyopaque) c_int
 }
 extern fn pthread_join(t: c_ulong, ret: ?*?*anyopaque) c_int;
 extern fn signal(sig: c_int, handler: *const fn (c_int) callconv(.c) void) ?*anyopaque;
-extern fn time(t: ?*i64) i64;
+extern fn zr_now_seconds() i64;
 const Tm = extern struct { sec: c_int, min: c_int, hour: c_int, mday: c_int, mon: c_int, year: c_int, wday: c_int, yday: c_int, isdst: c_int, gmtoff: c_long, zone: ?[*:0]const u8 };
-extern fn localtime_r(t: *const i64, tm: *Tm) ?*Tm;
+extern fn zr_localtime64(t: *const i64, tm: *Tm) ?*Tm;
 
 // v0.7 backends: all filesystem thumbnail work and firmware CLIs run off UI thread.
 extern fn zr_thumbs_init(data: [*:0]const u8) void;
@@ -413,7 +426,7 @@ fn fnv(s: []const u8) u64 {
 
 fn fmtDate(t: i64, out: []u8) []const u8 {
     var tm: Tm = undefined;
-    if (localtime_r(&t, &tm) == null) return "";
+    if (zr_localtime64(&t, &tm) == null) return "";
     return std.fmt.bufPrint(out, "{d}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}", .{
         @as(u32, @intCast(tm.year + 1900)), @as(u32, @intCast(tm.mon + 1)), @as(u32, @intCast(tm.mday)), @as(u32, @intCast(tm.hour)), @as(u32, @intCast(tm.min)),
     }) catch "";
@@ -455,7 +468,7 @@ const Stats = struct {
 const Opts = struct {
     book: ?[*:0]const u8 = null,
     wf: u32 = WF_REAGL,
-    full_refresh: u8 = 8,
+    full_refresh: u8 = 0,
     refresh_cli: bool = false,
     image_dither: bool = true,
     audit_refresh: bool = false,
@@ -647,7 +660,7 @@ fn button(r: Rect, label: []const u8, active: bool) void {
 
 // ---------------- measured-content refresh policy ----------------
 const SAMPLE_STEP: usize = 8;
-const PageMetrics = struct { ink: f32 = 0, dark: f32 = 0, tone: f32 = 0, image: f32 = 0 };
+const PageMetrics = struct { ink: f32 = 0, dark: f32 = 0, tone: f32 = 0, image: f32 = 0, photo: f32 = 0 };
 const Transition = struct { dark_to_light: f32 = 0, light_to_dark: f32 = 0 };
 const CleanReason = enum { text, opening, context, cover, image, dark, transition, periodic };
 const RefreshChoice = struct { mode: u32, reason: CleanReason };
@@ -657,6 +670,7 @@ var previous_page: i32 = -1;
 var text_since_clean: u32 = 0;
 fn pageMetrics(pixels: []const u8, w: usize, h: usize, stride: usize, image: f32) PageMetrics {
     var sum: u64 = 0;
+    var hist: [256]usize = @splat(0);
     var n: usize = 0;
     var dark: usize = 0;
     var tone: usize = 0;
@@ -666,13 +680,44 @@ fn pageMetrics(pixels: []const u8, w: usize, h: usize, stride: usize, image: f32
         while (x < w) : (x += SAMPLE_STEP) {
             const v = pixels[y * stride + x];
             sum += 255 - @as(u64, v);
+            if (v < 248) hist[v] += 1;
             dark += @intFromBool(v < 80);
             tone += @intFromBool(v > 16 and v < 239);
             n += 1;
         }
     }
+    // Infer the paper shade, excluding unpainted outside margins. A photographed
+    // page of text is NOT a photograph: grey paper must not count as picture ink.
+    var occupied: usize = 0;
+    for (hist) |v| occupied += v;
+    var paper: usize = 247;
+    var cumulative: usize = 0;
+    for (hist, 0..) |v, shade| {
+        cumulative += v;
+        if (cumulative >= occupied * 9 / 10 and occupied > 0) { paper = shade; break; }
+    }
+    // Broad filled tonal blocks, unlike fine text strokes and blank line gutters.
+    var picture: usize = 0;
+    var tiles: usize = 0;
+    var ty: usize = 0;
+    while (ty + 64 <= h) : (ty += 64) {
+        var tx: usize = 0;
+        while (tx + 64 <= w) : (tx += 64) {
+            var below: usize = 0;
+            var yy: usize = ty;
+            while (yy < ty + 64) : (yy += 8) {
+                var xx: usize = tx;
+                while (xx < tx + 64) : (xx += 8) {
+                    below += @intFromBool(@as(usize, pixels[yy * stride + xx]) + 40 < paper);
+                }
+            }
+            picture += @intFromBool(below >= 32);
+            tiles += 1;
+        }
+    }
+    const photo = @as(f32, @floatFromInt(picture)) / @as(f32, @floatFromInt(@max(tiles, 1)));
     const total: f32 = @floatFromInt(@max(n, 1));
-    return .{ .ink = @as(f32, @floatFromInt(sum)) / (255 * total), .dark = @as(f32, @floatFromInt(dark)) / total, .tone = @as(f32, @floatFromInt(tone)) / total, .image = image };
+    return .{ .photo = photo, .ink = @as(f32, @floatFromInt(sum)) / (255 * total), .dark = @as(f32, @floatFromInt(dark)) / total, .tone = @as(f32, @floatFromInt(tone)) / total, .image = image };
 }
 fn transitionMetrics(old: []const u8, pixels: []const u8, w: usize, h: usize, stride: usize) Transition {
     var n: usize = 0;
@@ -705,15 +750,15 @@ fn saveSamples(out: []u8, pixels: []const u8, w: usize, h: usize, stride: usize)
     }
 }
 fn imageHeavy(m: PageMetrics) bool {
-    return m.image >= 0.25 and (m.ink >= 0.12 or m.tone >= 0.025);
+    return m.image >= 0.25 and m.photo >= 0.18;
 }
 fn darkHeavy(m: PageMetrics) bool {
     return m.ink >= 0.25 or m.dark >= 0.30;
 }
 fn refreshChoice(old: PageMetrics, next: PageMetrics, delta: Transition, old_page: i32, page: i32, forced: bool, since: u32, every: u8, text_wf: u32) RefreshChoice {
-    const reason: CleanReason = if (old_page < 0) .opening else if (forced) .context else if (old_page == 0 or page == 0) .cover else if (imageHeavy(old) or imageHeavy(next)) .image else if (darkHeavy(old) or darkHeavy(next)) .dark
-        // Test both directions: driver-side night mode reverses their physical meaning.
-        else if (@max(delta.dark_to_light, delta.light_to_dark) >= 0.14) .transition else if (every != 0 and since + 1 >= every) .periodic else .text;
+    _ = delta;
+    const reason: CleanReason = if (old_page < 0) .opening else if (forced) .context else if (old_page == 0 or page == 0) .cover else if (imageHeavy(old) or imageHeavy(next)) .image
+        else if (every != 0 and since + 1 >= every) .periodic else .text;
     return .{ .mode = if (reason == .text) text_wf else WF_GC16, .reason = reason };
 }
 fn incomingChoice() RefreshChoice {
@@ -726,11 +771,11 @@ fn incomingChoice() RefreshChoice {
     previous_page = pool.cur;
     text_since_clean = if (choice.mode == WF_GC16) 0 else text_since_clean + 1;
     if (opts.debug or opts.sim != null or choice.mode == WF_GC16)
-        logf("page refresh: p={d} reason={s} wf={d} ink={d:.3} dark={d:.3} image={d:.3} release={d:.3} fill={d:.3}", .{ pool.cur + 1, @tagName(choice.reason), choice.mode, slot.metrics.ink, slot.metrics.dark, slot.metrics.image, delta.dark_to_light, delta.light_to_dark });
+        logf("page refresh: p={d} reason={s} wf={d} ink={d:.3} dark={d:.3} image={d:.3} photo={d:.3} release={d:.3} fill={d:.3}", .{ pool.cur + 1, @tagName(choice.reason), choice.mode, slot.metrics.ink, slot.metrics.dark, slot.metrics.image, slot.metrics.photo, delta.dark_to_light, delta.light_to_dark });
     return choice;
 }
 fn closeOverlayRefresh(region: Rect) void {
-    if (previous_metrics.image > 0) markFull(WF_GC16) else markDirty(region, WF_REAGL);
+    if (previous_page == 0 or imageHeavy(previous_metrics)) markFull(WF_GC16) else markDirty(region, WF_REAGL);
 }
 fn loadRefreshSetting() void {
     if (opts.refresh_cli) return;
@@ -738,6 +783,12 @@ fn loadRefreshSetting() void {
     const p = std.fmt.bufPrintSentinel(&b, "{s}/settings.json", .{opts.data}, 0) catch return;
     const data = readFile(p) orelse return;
     defer alloc.free(data);
+    // v0.8 migrates every existing periodic setting OFF exactly once.
+    if ((jsonNum(data, "refresh_policy") orelse 0) < 8) {
+        opts.full_refresh = 0;
+        _ = writeFileAtomic(p, "{\"full_refresh\":0,\"refresh_policy\":8}\n");
+        return;
+    }
     const n = jsonNum(data, "full_refresh") orelse return;
     if (n == 0 or n == 4 or n == 8 or n == 16) opts.full_refresh = @intFromFloat(n);
 }
@@ -751,7 +802,7 @@ fn cycleRefreshSetting() void {
     var p: [1200]u8 = undefined;
     var b: [80]u8 = undefined;
     const path = std.fmt.bufPrint(&p, "{s}/settings.json", .{opts.data}) catch return;
-    const data = std.fmt.bufPrint(&b, "{{\"full_refresh\":{d}}}\n", .{opts.full_refresh}) catch return;
+    const data = std.fmt.bufPrint(&b, "{{\"full_refresh\":{d},\"refresh_policy\":8}}\n", .{opts.full_refresh}) catch return;
     if (!writeFileAtomic(path, data)) toast("Could not save refresh setting", .{});
     markDirty(bottomPanel(), WF_GL16);
 }
@@ -776,6 +827,7 @@ const Pool = struct {
     quit: bool = false,
     suspended: bool = false,
     npages: i32 = 0,
+    paginating: bool = false,
     trim: bool = false,
     no_images: bool = false,
     trims: []Trim = &.{},
@@ -789,6 +841,7 @@ const Pool = struct {
     path: [*:0]const u8 = "",
     render_us: Stats = .{},
     errors: u32 = 0,
+    docs: [2]?*ZrDoc = .{ null, null },
 };
 var pool: Pool = .{};
 
@@ -1014,19 +1067,38 @@ fn turnView(direction: i32, t: u64) void {
     }
 }
 
+fn paginationProgress(pages: c_int) callconv(.c) c_int {
+    _ = pthread_mutex_lock(&pool.mtx);
+    defer _ = pthread_mutex_unlock(&pool.mtx);
+    if (pool.quit) return 0;
+    if (pages > pool.npages) {
+        pool.npages = pages;
+        _ = linux.write(pool.pipe_w, "r", 1);
+    }
+    return 1;
+}
 fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
     _ = pthread_mutex_lock(&pool.mtx);
     var my_font = pool.font;
     var my_margin = pool.margin;
     var my_spacing = pool.spacing;
     _ = pthread_mutex_unlock(&pool.mtx);
-    const doc = zr_open(pool.path, LW, LH, my_font, my_margin) orelse {
-        logf("worker: cannot open document", .{});
+    const doc = zr_open_worker(pool.path, LW, LH, my_font, my_margin, my_spacing, paginationProgress) orelse {
+        if (!pool.quit) logf("worker: cannot open document", .{});
         return null;
     };
     zr_set_spacing(doc, my_spacing);
     if (zr_reflowable(doc) != 0) _ = zr_relayout(doc, LW, LH, my_font, my_margin, 0);
     _ = pthread_mutex_lock(&pool.mtx);
+    var doc_index: usize = 0;
+    while (doc_index < pool.docs.len and pool.docs[doc_index] != null) : (doc_index += 1) {}
+    if (doc_index < pool.docs.len) pool.docs[doc_index] = doc;
+    if (zr_reflowable(doc) != 0) {
+        pool.npages = zr_page_count(doc);
+        pool.paginating = false;
+        logf("pagination: completed asynchronously pages={d}", .{pool.npages});
+        _ = linux.write(pool.pipe_w, "r", 1);
+    }
     while (!pool.quit) {
         if (pool.font != my_font or pool.margin != my_margin or pool.spacing != my_spacing) {
             my_font = pool.font;
@@ -1063,6 +1135,7 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
             have_trim = true;
         }
         const ni: c_int = @intFromBool(pool.no_images);
+        zr_reset_cancel(doc);
         _ = pthread_mutex_unlock(&pool.mtx);
 
         const t0 = nowUs();
@@ -1092,6 +1165,7 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
         _ = pthread_cond_broadcast(&pool.cond);
         _ = linux.write(pool.pipe_w, "r", 1);
     }
+    if (doc_index < pool.docs.len) pool.docs[doc_index] = null;
     _ = pthread_mutex_unlock(&pool.mtx);
     zr_close(doc);
     return null;
@@ -1175,6 +1249,12 @@ fn readingAnchor() Anchor {
     if (book.position.chapter >= 0 and zr_anchor_page(book.doc, &book.position) == pool.cur) return book.position;
     return pageAnchor(pool.cur);
 }
+fn repairOpened(v: f64) i64 {
+    if (!std.math.isFinite(v) or v < -4294967296 or v > 253402300799) return 0;
+    const n: i64 = @intFromFloat(v);
+    // Recover the corrupt high word returned by the old time32 binding.
+    return if (n < 0) n + 4294967296 else n;
+}
 fn loadState(path: []const u8) State {
     var st: State = .{};
     var pb: [1200]u8 = undefined;
@@ -1201,12 +1281,13 @@ fn loadState(path: []const u8) State {
     } else if (!st.typography) st.font = 9;
     if (jsonNum(data, "margin")) |v| st.margin = std.math.clamp(@as(f32, @floatCast(v)), 0, 60);
     if (jsonNum(data, "trim")) |v| st.trim = v != 0;
-    if (jsonNum(data, "opened")) |v| st.opened = @intFromFloat(v);
+    if (jsonNum(data, "opened")) |v| st.opened = repairOpened(v);
     if (jsonNum(data, "pages")) |v| st.pages = @intFromFloat(v);
     return st;
 }
 fn saveState() void {
     if (!book.open) return;
+    if (book.reflow) zr_page_count_hint(book.doc, pool.npages);
     var b = Buf.init(2048);
     defer b.deinit();
     b.put("{\"path\":\"");
@@ -1399,13 +1480,14 @@ fn deleteNote(k: usize) void {
 fn spawnWorkers() void {
     pool.quit = false;
     book.nthreads = 0;
-    for (&book.threads) |*t| {
+    for (book.threads[0..(if (book.reflow) @as(usize, 1) else book.threads.len)]) |*t| {
         if (spawn(t, workerThread) == 0) book.nthreads += 1;
     }
 }
 fn stopWorkers() void {
     _ = pthread_mutex_lock(&pool.mtx);
     pool.quit = true;
+    for (pool.docs) |doc| if (doc) |d| zr_cancel(d);
     _ = pthread_cond_broadcast(&pool.cond);
     _ = pthread_mutex_unlock(&pool.mtx);
     for (book.threads[0..book.nthreads]) |t| _ = pthread_join(t, null);
@@ -1414,8 +1496,8 @@ fn stopWorkers() void {
 
 fn closeBook() void {
     if (!book.open) return;
-    saveState();
     stopWorkers();
+    saveState();
     zr_close(book.doc);
     dictionary_open = false;
     search_running = false;
@@ -1428,8 +1510,25 @@ fn closeBook() void {
     book.words_page = -1;
 }
 
+fn renderFirstRaster(doc: *ZrDoc) void {
+    var r: [4]f32 = .{ 0, 0, 612, 792 };
+    const ni: c_int = @intFromBool(opts.no_images);
+    const rc = if (pool.trim) zr_ink_bbox(doc, pool.cur, &r, ni) else zr_page_bounds(doc, pool.cur, &r);
+    const slot = &pool.slots[0];
+    slot.geometry = viewGeometry(r, pool.view, pool.base_width, pool.step, pool.pan_x, pool.pan_y);
+    slot.m = slot.geometry.m;
+    var rs: ZrRenderStats = .{};
+    const rendered = rc == 0 and zr_render_with_stats(doc, pool.cur, &slot.m, slot.buf.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), ni, @intFromBool(opts.image_dither), &rs) == 0;
+    slot.page = pool.cur; slot.step = pool.step; slot.gen = pool.gen;
+    slot.state = if (rendered) .ready else .failed;
+    slot.metrics = pageMetrics(slot.buf, W, H, STRIDE, rs.image_coverage);
+    if (pool.trim and rendered) pool.trims[@intCast(pool.cur)] = .{ .done = true, .r = r };
+}
+
 fn openBook(path: []const u8) bool {
+    const request_start = nowUs();
     closeBook();
+    logf("open profile: close_previous_us={d}", .{nowUs() - request_start});
     first_clean = true;
     previous_page = -1;
     previous_metrics = .{};
@@ -1446,17 +1545,16 @@ fn openBook(path: []const u8) bool {
 
     const st = loadState(path);
     const zpath: [*:0]const u8 = @ptrCast(&book.path);
-    const doc = zr_open(zpath, LW, LH, st.font, st.margin) orelse {
+    const open_start = nowUs();
+    const doc = (if (st.typography and st.page == 0 and st.anchor.chapter < 0) zr_open_initial(zpath, LW, LH, st.font, st.margin, st.spacing) else if (st.typography) zr_open_style(zpath, LW, LH, st.font, st.margin, st.spacing) else zr_open(zpath, LW, LH, st.font, st.margin)) orelse {
         logf("cannot open {s}", .{path});
         return false;
     };
+    logf("open profile: load+pagination_us={d}", .{nowUs() - open_start});
     book.doc = doc;
     book.is_pdf = zr_is_pdf(doc) != 0;
     book.reflow = zr_reflowable(doc) != 0;
-    if (book.reflow and st.typography) {
-        zr_set_spacing(doc, st.spacing);
-        _ = zr_relayout(doc, LW, LH, st.font, st.margin, st.page);
-    }
+
     const np = zr_page_count(doc);
     if (np <= 0) {
         zr_close(doc);
@@ -1469,6 +1567,7 @@ fn openBook(path: []const u8) bool {
         s.page = -1;
     }
     pool.npages = np;
+    pool.paginating = zr_pagination_pending(doc) != 0;
     pool.cur = std.math.clamp(st.page, 0, np - 1);
     pool.dir = 1;
     pool.spacing = st.spacing;
@@ -1493,7 +1592,7 @@ fn openBook(path: []const u8) bool {
         book.toc_text = alloc.alloc(u8, 256 * 1024) catch &.{};
     }
     book.open = true;
-    book.opened_ts = time(null);
+    book.opened_ts = zr_now_seconds();
     book.position = .{};
     search_query[0] = 0;
     search_len = 0;
@@ -1502,21 +1601,26 @@ fn openBook(path: []const u8) bool {
     search_hit = null;
     loadNotes();
     if (book.reflow) {
-        const migrated = migrateNotes();
-        const position = if (st.anchor.chapter >= 0) st.anchor else pageAnchor(pool.cur);
+        const migrated = if (book.nnotes > 0) migrateNotes() else false;
+        const position = if (st.anchor.chapter >= 0) st.anchor else if (!st.typography or book.nnotes > 0) pageAnchor(pool.cur) else Anchor{};
         book.position = position;
         if (!st.typography) {
             zr_set_spacing(doc, st.spacing);
             _ = zr_relayout(doc, LW, LH, st.font, st.margin, pool.cur);
             pool.npages = zr_page_count(doc);
         }
-        const anchored_page = zr_anchor_page(doc, &position);
+        const anchored_page = if (position.chapter >= 0) zr_anchor_page(doc, &position) else -1;
         if (anchored_page >= 0) pool.cur = anchored_page else pool.cur = std.math.clamp(pool.cur, 0, pool.npages - 1);
-        resolveNotePages();
+        if (book.nnotes > 0) resolveNotePages();
         if (migrated or !st.typography) saveNotes();
     }
+    // Reuse the already-open document for the first raster. Do NOT wait for two
+    // more independently opened/paginated worker documents before showing it.
+    const raster_start = nowUs();
+    renderFirstRaster(doc);
+    logf("open profile: first_raster_us={d} first_page_ready_us={d}", .{nowUs() - raster_start, nowUs() - open_start});
     spawnWorkers();
-    saveState();
+    book.state_dirty = true;
     logf("opened {s}: pages={d} pdf={} reflow={} start={d} notes={d}", .{ path, np, book.is_pdf, book.reflow, pool.cur + 1, book.nnotes });
     return true;
 }
@@ -1604,6 +1708,7 @@ fn init07() void {
         power_sleeps = (jsonNum(data, "power_sleeps") orelse 0) == 1;
     }
     const root = std.fmt.bufPrintSentinel(&path, "{s}", .{opts.data}, 0) catch return;
+    zr_layout_cache(root);
     zr_thumbs_init(root);
     zr_device_init(@intFromBool(opts.sim != null));
     if (opts.sim != null) {
@@ -1860,7 +1965,10 @@ fn tick07() void {
 }
 
 // ---------------- library ----------------
-const Entry = struct { path: []u8, title: []const u8, folder: []const u8, opened: i64, progress: i32 };
+const Entry = struct { path: []u8, title: []const u8, folder: []const u8, opened: i64, progress: i32, bytes: u64 = 0, epub: bool = false };
+var books_bytes: u64 = 0;
+var storage_free: u64 = 0;
+var storage_total: u64 = 0;
 var lib: [4000]Entry = undefined;
 var nlib: usize = 0;
 
@@ -1895,9 +2003,13 @@ fn scanDir(path: []const u8, depth: u32) void {
             const base = p[p.len - name.len ..];
             const dot = std.mem.lastIndexOfScalar(u8, base, '.') orelse base.len;
             const folder_full = p[0 .. p.len - name.len - 1];
-            const folder = if (folder_full.len > opts.books.len) folder_full[opts.books.len + 1 ..] else "Books";
+            const folder = if (std.mem.startsWith(u8, folder_full, opts.books) and folder_full.len > opts.books.len) folder_full[opts.books.len + 1 ..] else if (std.mem.startsWith(u8, folder_full, "/mnt/us/documents")) folder_full[8..] else "Books";
+            var fzb: [1200]u8 = undefined;
+            const fz = std.fmt.bufPrintSentinel(&fzb, "{s}", .{p}, 0) catch continue;
+            const bytes = zr_file_size(fz);
+            books_bytes += bytes;
             const st = loadState(p);
-            lib[nlib] = .{ .path = p, .title = base[0..dot], .folder = folder, .opened = st.opened, .progress = if (st.pages > 0) @intCast(std.math.clamp(@divTrunc((@as(i64, st.page) + 1) * 100, st.pages), 0, 100)) else -1 };
+            lib[nlib] = .{ .bytes = bytes, .epub = std.ascii.endsWithIgnoreCase(name, ".epub"), .path = p, .title = base[0..dot], .folder = folder, .opened = st.opened, .progress = if (st.pages > 0) @intCast(std.math.clamp(@divTrunc((@as(i64, st.page) + 1) * 100, st.pages), 0, 100)) else -1 };
             nlib += 1;
         }
     }
@@ -1910,7 +2022,11 @@ fn libLess(_: void, a: Entry, b: Entry) bool {
 fn scanLibrary() void {
     for (lib[0..nlib]) |e| alloc.free(e.path);
     nlib = 0;
+    last_cover_page = std.math.maxInt(usize);
+    books_bytes = 0;
+    _ = zr_storage("/mnt/us", &storage_free, &storage_total);
     scanDir(opts.books, 0);
+    if (eql(opts.books, "/mnt/us/Books")) scanDir("/mnt/us/documents", 0);
     sortLibrary();
     logf("library: {d} books under {s}", .{ nlib, opts.books });
 }
@@ -2320,7 +2436,7 @@ fn drawMenu() void {
     fill(.{ .x = 0, .y = p.y, .w = p.w, .h = 3 }, 0x00);
     const shown_page = if (slider_active) slider_page else pool.cur;
     var b1: [64]u8 = undefined;
-    const pg = std.fmt.bufPrint(&b1, "Page {d} of {d}", .{ shown_page + 1, pool.npages }) catch "";
+    const pg = if (pool.paginating) std.fmt.bufPrint(&b1, "Page {d} / counting pages...", .{shown_page + 1}) catch "" else std.fmt.bufPrint(&b1, "Page {d} of {d}", .{ shown_page + 1, pool.npages }) catch "";
     text(SANS, 36, 70, @floatFromInt(p.y + 80), pg, 0x00);
     var b2: [16]u8 = undefined;
     const pct = std.fmt.bufPrint(&b2, "{d}%", .{@divTrunc((shown_page + 1) * 100, @max(pool.npages, 1))}) catch "";
@@ -2361,7 +2477,7 @@ fn drawMenu() void {
 
 fn drawRefreshButton() void {
     var b: [80]u8 = undefined;
-    const label = if (opts.full_refresh == 0) "Full refresh: off" else std.fmt.bufPrint(&b, "Full refresh: every {d} pages", .{opts.full_refresh}) catch "Full refresh";
+    const label = if (opts.full_refresh == 0) "Cleanup: off" else std.fmt.bufPrint(&b, "Cleanup: every {d} pages", .{opts.full_refresh}) catch "Full refresh";
     button(refreshButton(), label, false);
 }
 fn drawPopup() void {
@@ -2395,8 +2511,30 @@ fn drawToast() void {
     textCenter(SANS, 34, r, toast_buf[0..toast_len], 0xFF);
 }
 
+fn formatBytes(value: u64, buf: []u8) []const u8 {
+    if (value >= 1024 * 1024 * 1024) return std.fmt.bufPrint(buf, "{d:.1} GiB", .{@as(f64, @floatFromInt(value)) / (1024 * 1024 * 1024)}) catch "";
+    if (value >= 1024 * 1024) return std.fmt.bufPrint(buf, "{d:.1} MiB", .{@as(f64, @floatFromInt(value)) / (1024 * 1024)}) catch "";
+    if (value >= 1024) return std.fmt.bufPrint(buf, "{d:.0} KiB", .{@as(f64, @floatFromInt(value)) / 1024}) catch "";
+    return std.fmt.bufPrint(buf, "{d} B", .{value}) catch "";
+}
+fn drawBattery() void {
+    // Cached read-only powerd value. No independent dirty mark or screen update.
+    const value = if (opts.sim != null) @as(c_int, 76) else zr_battery();
+    const x: i32 = @as(i32, @intCast(W)) - 205;
+    const y: i32 = 4;
+    fill(.{ .x = x - 8, .y = y - 4, .w = 205, .h = 38 }, 255);
+    const icon = Rect{ .x = x, .y = y + 3, .w = 54, .h = 27 };
+    frame(icon, 2, 0x33);
+    fill(.{ .x = x + 54, .y = y + 10, .w = 5, .h = 12 }, 0x33);
+    if (value >= 0) fill(.{ .x = x + 5, .y = y + 8, .w = @divTrunc(44 * value, 100), .h = 17 }, 0x33);
+    var b: [16]u8 = undefined;
+    const label = if (value >= 0) std.fmt.bufPrint(&b, "{d}%", .{value}) catch "" else "--%";
+    text(SANS, 27, @floatFromInt(x + 71), @floatFromInt(y + 28), label, 0x33);
+}
 fn drawReader() bool {
     _ = pthread_mutex_lock(&pool.mtx);
+    if (book.reflow) zr_page_count_hint(book.doc, pool.npages);
+    if (pool.paginating and slotFor(pool.cur) == null) renderFirstRaster(book.doc);
     var ok = false;
     if (slotFor(pool.cur)) |i| {
         const s = &pool.slots[i];
@@ -2427,6 +2565,7 @@ fn drawReader() bool {
     if (popup_open) drawPopup();
     if (dictionary_open) drawDefinition();
     drawToast();
+    drawBattery();
     return true;
 }
 
@@ -2465,8 +2604,15 @@ fn rowSep(r: Rect) void {
     fill(.{ .x = r.x, .y = r.y + r.h - 2, .w = r.w, .h = 2 }, 0xC0);
 }
 
+var last_cover_page: usize = std.math.maxInt(usize);
+var last_cover_sort: usize = 255;
+var last_cover_folder: usize = std.math.maxInt(usize);
 fn drawLibrary() void {
     header(if (folder_picker) "Folders" else "Library", book.open);
+    drawBattery();
+    if (last_cover_page != list_page or last_cover_sort != lib_sort or last_cover_folder != folder_filter) {
+        zr_thumbs_focus(); last_cover_page = list_page; last_cover_sort = lib_sort; last_cover_folder = folder_filter;
+    }
     button(libraryControl(0), SORT_NAMES[lib_sort], false);
     var label: [1100]u8 = undefined;
     button(libraryControl(1), std.fmt.bufPrint(&label, "Folder: {s}", .{if (folder_filter == 0) "All" else folders[folder_filter - 1]}) catch "Folders", folder_picker);
@@ -2483,10 +2629,14 @@ fn drawLibrary() void {
             textFit(SERIF, 42, @floatFromInt(r.x + 20), @floatFromInt(r.y + 85), name, @floatFromInt(r.w - 40), 0);
         } else {
             const e = lib[lib_visible[k]];
-            _ = drawThumb(e.path, .{ .x = r.x, .y = r.y + 8, .w = 96, .h = 128 });
+            if (!drawThumb(e.path, .{ .x = r.x, .y = r.y + 8, .w = 96, .h = 128 })) {
+                frame(.{ .x = r.x, .y = r.y + 8, .w = 96, .h = 128 }, 2, 0xAA);
+                textCenter(SANS, 20, .{ .x = r.x, .y = r.y + 8, .w = 96, .h = 128 }, if (e.epub) "EPUB" else "PDF", 0x55);
+            }
             textFit(SERIF, 38, @floatFromInt(r.x + 125), @floatFromInt(r.y + 55), e.title, @floatFromInt(r.w - 125), 0);
             var subbuf: [1200]u8 = undefined;
-            const sub = std.fmt.bufPrint(&subbuf, "{s}  /  {s}", .{ e.folder, if (e.progress < 0) "New" else "Reading" }) catch "";
+            var sizebuf: [32]u8 = undefined;
+            const sub = std.fmt.bufPrint(&subbuf, "{s}  \xc2\xb7  {s}  \xc2\xb7  {s}", .{ if (e.epub) "EPUB" else "PDF", formatBytes(e.bytes, &sizebuf), e.folder }) catch "";
             textFit(SANS, 25, @floatFromInt(r.x + 125), @floatFromInt(r.y + 92), sub, @floatFromInt(r.w - 240), 0x55);
             const track = Rect{ .x = r.x + 125, .y = r.y + 115, .w = r.w - 250, .h = 12 };
             fill(track, 0xDD);
@@ -2496,6 +2646,21 @@ fn drawLibrary() void {
         }
         rowSep(r);
     }
+    // Next page requests are lower priority than visible rows. Cache reads run
+    // independently, so even a twelve-second uncached book cannot delay a hit.
+    if (!folder_picker) {
+        for (0..per) |i| {
+            const k = (list_page + 1) * per + i;
+            if (k >= total) break;
+            var z: [1200]u8 = undefined;
+            const path = std.fmt.bufPrintSentinel(&z, "{s}", .{lib[lib_visible[k]].path}, 0) catch continue;
+            var scratch: [96 * 128]u8 = undefined;
+            _ = zr_thumb(path, &scratch);
+        }
+    }
+    var a: [32]u8 = undefined; var b: [32]u8 = undefined; var c: [32]u8 = undefined; var line: [180]u8 = undefined;
+    const storage = if (storage_total > 0) std.fmt.bufPrint(&line, "{s} free / {s}  \xc2\xb7  Books {s}", .{formatBytes(storage_free, &a), formatBytes(storage_total, &b), formatBytes(books_bytes, &c)}) catch "" else std.fmt.bufPrint(&line, "Device storage unavailable  \xc2\xb7  Books {s}", .{formatBytes(books_bytes, &c)}) catch "";
+    text(SANS, 26, 70, @floatFromInt(@as(i32, @intCast(H)) - 180), storage, 0x33);
     pager(total);
     drawToast();
 }
@@ -2898,7 +3063,7 @@ fn popupAction(i: i32) void {
             var n = book.notes[k];
             n.text = alloc.dupe(u8, n.text) catch return;
             n.style = 2;
-            n.ts = time(null);
+            n.ts = zr_now_seconds();
             book.notes[book.nnotes] = n;
             book.nnotes += 1;
             saveNotes();
@@ -2917,7 +3082,7 @@ fn popupAction(i: i32) void {
         if (book.reflow and zr_anchor_words(book.doc, pool.cur, @intCast(@min(sel_a, sel_b)), @intCast(@max(sel_a, sel_b)), &n.anchor) == 0) n.unresolved = true;
         n.page = pool.cur;
         n.style = @intCast(i);
-        n.ts = time(null);
+        n.ts = zr_now_seconds();
         var tb: [8192]u8 = undefined;
         n.text = alloc.dupe(u8, selectionText(&tb)) catch &.{};
         n.nq = selectionQuads(sel_a, sel_b, &n.q);
@@ -3355,7 +3520,7 @@ fn auditRefresh() !u8 {
     const base = if (std.mem.lastIndexOfScalar(u8, name, '/')) |i| name[i + 1 ..] else name;
     const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |i| base[0..i] else base;
     mkdirP(opts.shots);
-    const csv_header = "page,ink,dark,tone,image,dark_to_light,light_to_dark,reason,waveform,update_mode\n";
+    const csv_header = "page,ink,dark,tone,image,photo,dark_to_light,light_to_dark,reason,waveform,update_mode\n";
     _ = linux.write(1, csv_header.ptr, csv_header.len);
     var page: i32 = 0;
     while (page < count) : (page += 1) {
@@ -3380,7 +3545,7 @@ fn auditRefresh() !u8 {
         } else since += 1;
         old = next;
         var line: [512]u8 = undefined;
-        const csv = try std.fmt.bufPrint(&line, "{d},{d:.5},{d:.5},{d:.5},{d:.5},{d:.5},{d:.5},{s},{d},{d}\n", .{ page + 1, next.ink, next.dark, next.tone, next.image, delta.dark_to_light, delta.light_to_dark, @tagName(choice.reason), choice.mode, if (choice.mode == WF_GL16) UPDATE_MODE_PARTIAL else UPDATE_MODE_FULL });
+        const csv = try std.fmt.bufPrint(&line, "{d},{d:.5},{d:.5},{d:.5},{d:.5},{d:.5},{d:.5},{d:.5},{s},{d},{d}\n", .{ page + 1, next.ink, next.dark, next.tone, next.image, next.photo, delta.dark_to_light, delta.light_to_dark, @tagName(choice.reason), choice.mode, if (choice.mode == WF_GL16) UPDATE_MODE_PARTIAL else UPDATE_MODE_FULL });
         _ = linux.write(1, csv.ptr, csv.len);
         if (page < 4) {
             var pb: [1200]u8 = undefined;
@@ -3407,7 +3572,7 @@ fn usage() void {
         \\zreader {s}
         \\usage: zreader [options] [book.pdf|book.epub]     (no book: Library)
         \\  --wf reagl|gl16    page-turn waveform (default reagl; gl16 is for testing)
-        \\  --full-refresh off|4|8|16 periodic clean (default 8)
+        \\  --full-refresh off|4|8|16 periodic clean (default off)
         \\  --no-image-dither  disable image-only 16-level dithering
         \\  --audit-refresh    offline refresh CSV; no device access
         \\  --no-images        experimental: skip drawing images
@@ -3480,6 +3645,7 @@ fn parseArgs(argv: []const [*:0]const u8) bool {
 }
 
 pub fn main(init: std.process.Init.Minimal) !u8 {
+    zr_no_core();
     const argv: []const [*:0]const u8 = @ptrCast(init.args.vector);
     if (argv.len == 2 and eql(std.mem.span(argv[1]), "--powerd-events")) return @intCast(zr_watch_events());
     if (argv.len == 4 and eql(std.mem.span(argv[1]), "--make-thumb")) return @intCast(zr_make_thumb(argv[2], argv[3]));
@@ -3987,16 +4153,16 @@ test "adjacent wrapped selection handles choose nearest endpoint, not first hit"
 
 test "adaptive refresh: heavy cover/images and large transitions only, plain text stays REAGL" {
     const text_page: PageMetrics = .{ .ink = 0.08, .dark = 0.06, .tone = 0.03, .image = 0 };
-    const illustration: PageMetrics = .{ .ink = 0.20, .dark = 0.15, .tone = 0.15, .image = 0.60 };
+    const illustration: PageMetrics = .{ .photo = 0.3, .ink = 0.20, .dark = 0.15, .tone = 0.15, .image = 0.60 };
     const dark_page: PageMetrics = .{ .ink = 0.50, .dark = 0.48, .tone = 0.10, .image = 0 };
     const mild: Transition = .{ .dark_to_light = 0.06, .light_to_dark = 0.05 };
     try std.testing.expectEqual(WF_REAGL, refreshChoice(text_page, text_page, mild, 2, 3, false, 0, 8, WF_REAGL).mode);
     try std.testing.expectEqual(WF_GC16, refreshChoice(illustration, text_page, mild, 8, 9, false, 0, 8, WF_REAGL).mode);
     try std.testing.expectEqual(WF_GC16, refreshChoice(text_page, illustration, mild, 8, 9, false, 0, 8, WF_REAGL).mode);
-    try std.testing.expectEqual(WF_GC16, refreshChoice(dark_page, text_page, mild, 8, 9, false, 0, 8, WF_REAGL).mode);
-    try std.testing.expectEqual(WF_GC16, refreshChoice(text_page, text_page, .{ .dark_to_light = 0.20 }, 8, 9, false, 0, 8, WF_REAGL).mode);
+    try std.testing.expectEqual(WF_REAGL, refreshChoice(dark_page, text_page, mild, 8, 9, false, 0, 8, WF_REAGL).mode);
+    try std.testing.expectEqual(WF_REAGL, refreshChoice(text_page, text_page, .{ .dark_to_light = 0.20 }, 8, 9, false, 0, 8, WF_REAGL).mode);
     // Hardware night mode reverses light/dark; both directions must be covered.
-    try std.testing.expectEqual(WF_GC16, refreshChoice(text_page, text_page, .{ .light_to_dark = 0.20 }, 8, 9, false, 0, 8, WF_REAGL).mode);
+    try std.testing.expectEqual(WF_REAGL, refreshChoice(text_page, text_page, .{ .light_to_dark = 0.20 }, 8, 9, false, 0, 8, WF_REAGL).mode);
     try std.testing.expectEqual(CleanReason.context, refreshChoice(text_page, text_page, mild, 8, 8, true, 0, 8, WF_REAGL).reason);
     try std.testing.expectEqual(CleanReason.cover, refreshChoice(text_page, text_page, mild, 0, 1, false, 0, 8, WF_REAGL).reason);
     try std.testing.expectEqual(CleanReason.opening, refreshChoice(.{}, text_page, .{}, -1, 5, false, 0, 8, WF_REAGL).reason);
@@ -4038,7 +4204,7 @@ test "image popup dismissal clears full screen; plain text popup stays on normal
     dirty_mode = WF_DU;
     closeOverlayRefresh(.{ .x = 10, .y = 10, .w = 100, .h = 100 });
     try std.testing.expectEqual(WF_REAGL, dirty_mode);
-    previous_metrics = .{ .image = 0.02 };
+    previous_metrics = .{ .image = 0.8, .photo = 0.3 };
     dirty = .{};
     dirty_mode = WF_DU;
     closeOverlayRefresh(.{ .x = 10, .y = 10, .w = 100, .h = 100 });
@@ -4594,4 +4760,48 @@ test "v07 sleep default stays off and refuses accidental entry" {
     sleep_phase = .awake;
     requestSleep();
     try std.testing.expectEqual(SleepPhase.awake, sleep_phase);
+}
+
+
+test "v08 storage units and legacy time32 opened repair" {
+    var b: [64]u8 = undefined;
+    try std.testing.expectEqualStrings("0 B", formatBytes(0, &b));
+    try std.testing.expectEqualStrings("47.0 MiB", formatBytes(47 * 1024 * 1024, &b));
+    try std.testing.expectEqualStrings("9.2 GiB", formatBytes(9878424781, &b));
+    try std.testing.expectEqual(@as(i64, 1794022244), repairOpened(-2500945052));
+    try std.testing.expectEqual(@as(i64, 1794022244), repairOpened(1794022244));
+    try std.testing.expectEqual(@as(i64, 0), repairOpened(-5000000000));
+    try std.testing.expect(zr_now_seconds() > 1700000000);
+    try std.testing.expect(zr_now_seconds() < 3000000000);
+}
+test "v08 grey scan paper is not photo ink or periodic cleanup" {
+    const scan = PageMetrics{ .ink = 0.4, .tone = 0.8, .image = 0.85, .photo = 0.04 };
+    for (0..100) |i| {
+        try std.testing.expectEqual(WF_REAGL, refreshChoice(scan, scan, .{ .dark_to_light = 0.2 }, 10, 11, false, @intCast(i), 0, WF_REAGL).mode);
+    }
+    const photo = PageMetrics{ .ink = 0.4, .image = 0.8, .photo = 0.4 };
+    try std.testing.expectEqual(WF_GC16, refreshChoice(scan, photo, .{}, 10, 11, false, 0, 0, WF_REAGL).mode);
+}
+
+
+test "v08 library layout storage and battery screenshot (illustrative values)" {
+    fb = try alloc.alloc(u8, @as(usize, STRIDE) * H);
+    defer alloc.free(fb);
+    ui = zr_ui_new(sans_font.ptr, @intCast(sans_font.len)) orelse return error.UI;
+    opts.sim = "preview";
+    book.open = false; screen = .library; list_page = 0; toast_len = 0;
+    folder_filter = 0; folder_picker = false; lib_sort = 1;
+    storage_free = 9878424781; storage_total = 12348030976; books_bytes = 1717986918;
+    const names = [_][]const u8{ "A field guide to the night sky", "Notes from the quiet valley", "Collected stories", "The art of careful observation", "A practical programming companion", "A short history of discovery", "Patterns in nature" };
+    nlib = names.len;
+    for (names, 0..) |name, i| {
+        lib[i] = .{ .path = @constCast("preview.pdf"), .title = name, .folder = if (i % 2 == 0) "Reference" else "Literature", .opened = 0, .progress = if (i < 3) @intCast(15 + i * 23) else -1, .bytes = (i + 1) * 1536000, .epub = i % 2 != 0 };
+        lib_visible[i] = i;
+    }
+    nvisible = names.len;
+    drawLibrary();
+    var image = Buf.init(fb.len + 64); defer image.deinit();
+    image.print("P5 {d} {d} 255\n", .{ W, H }); image.put(fb);
+    try std.testing.expect(writeFileAtomic("shots/86_library_storage_battery_mock.pgm", image.slice()));
+    nlib = 0; nvisible = 0; opts.sim = null;
 }

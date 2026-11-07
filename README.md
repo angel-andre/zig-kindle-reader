@@ -2,7 +2,7 @@
 
 A small, standalone PDF/EPUB reader written in Zig and C for a jailbroken **Kindle Paperwhite 12th generation (PW6)**. The executable is `zreader`; KUAL calls it “Zig reader”. These names refer to the same application.
 
-**Version: 0.7.0 · tested device family: PW6 only · other Kindles: untested.**
+**Version: 0.8.0 · tested device family: PW6 only · other Kindles: untested.**
 
 This project is not replacement firmware. It temporarily pauses the stock interface while reading and restores it on exit. It does not remove Amazon's operating system, alter system partitions, or replace the jailbreak. There is no claim of broader compatibility or measured superiority over KOReader.
 
@@ -19,7 +19,9 @@ This project is not replacement firmware. It temporarily pauses the stock interf
 
 Developers: [build](docs/BUILD.md) · [tests and evidence](docs/TESTING.md) · [architecture](docs/ARCHITECTURE.md) · [known limitations](docs/LIMITATIONS.md) · [roadmap and benchmark plan](docs/ROADMAP.md) · [licences](THIRD_PARTY.md).
 
-## Features by version
+## Version history
+
+Full details in [CHANGELOG.md](CHANGELOG.md). Versions before 0.4 were internal prototypes whose details were not recorded, so they are not listed.
 
 | Version | Scope |
 | --- | --- |
@@ -28,6 +30,7 @@ Developers: [build](docs/BUILD.md) · [tests and evidence](docs/TESTING.md) · [
 | 0.5.1 | REAGL for normal text; GC16 FULL for heavy image/dark transitions and context changes; full refresh Off/4/8/16 (default 8); conservative image-only grayscale dithering. Inherited hardware dark mode is preserved, not emulated or switched off. |
 | 0.6 | PDF fit-page/fit-width/1.5×/2× and pan; EPUB persistent text anchors, adjustable typography and spacing; offline WordNet English dictionary; incremental in-book search; JSON/TXT/Markdown exports; reversible crash-dump marker helper. |
 | 0.7 | Lazy library covers, relative folders, Recent/Title/Progress sorting and progress bars; frontlight and warmth via LIPC only; experimental opt-in power-button sleep and independent emergency recovery. |
+| 0.8.0 | Scanned-book flicker fix: grey paper tone is no longer counted as a heavy image (scan-D-type 372-page scan: 372/372 GC16 flashes → 353 REAGL + 19 intentional cleans for opening, cover and real photo pages). Periodic full refresh Off by default and its bottom label removed. Persistent cover cache (≤10 MiB) with instant placeholders and next-page prefetch. Faster first page and EPUB pagination cache. Library storage line (free/total, books total) and per-book type and size. Battery bar and percentage top-right (read-only, no extra refresh). 64-bit timestamp fix for “opened”. App core dumps disabled. Known limitation: first cold open of a big EPUB with a deep saved spot can still be slow once. |
 
 Notes are overlays: original book files are never modified. Books belong in `/mnt/us/Books`, including subfolders. DRM-protected books are not supported by this workflow.
 
@@ -43,13 +46,17 @@ These are host-generated UI previews from synthetic books and fixtures. They sho
 | --- | --- | --- |
 | ![Typography](shots/50_epub_typography_preview.png) | ![Annotations](shots/53_epub_annotation_popup_preview.png) | ![Search](shots/61_search_keyboard_preview.png) |
 
+| Storage and battery (0.8, mock data) | Scanned-book refresh log (0.8) |
+| --- | --- |
+| ![Storage and battery](shots/86_library_storage_battery_mock_dark.png) | ![Refresh log](shots/89_scan_turn_log.png) |
+
 ## Space and distribution
 
 The installed ARM executable is **6,645,540 bytes** and the WordNet index **14,449,559 bytes** (13.78 MiB). The original compressed runtime is about 8.23 MiB. Allow at least 50 MiB free for a fresh installation, and more for upgrade backups and staging. Library thumbnails grow lazily to at most 10 MiB of cache payload, plus a small RAM cache. Books, notes and backups are additional.
 
 The reference cleanup recovered approximately 2.5 GB of crash dumps and 150 MB of VoiceView data; the user partition subsequently had about 9.2 GB free. These are historical approximate values, not promised savings on another device. System partitions were intentionally left alone.
 
-`release/zr07.tgz` is the original installed-version runtime, with checksum records. Its bundled README and `docs/REFERENCE_MANUAL.txt` are historical build-time documents: their “not deployed” statements describe the original host build, not the later recorded installation. See [provenance](docs/PROVENANCE.md) for what was and was not verified.
+`release/zr08.tgz` is the current 0.8.0 runtime; `release/zr07.tgz` is kept for rollback and is the original installed-version 0.7 runtime, with checksum records. Its bundled README and `docs/REFERENCE_MANUAL.txt` are historical build-time documents: their “not deployed” statements describe the original host build, not the later recorded installation. See [provenance](docs/PROVENANCE.md) for what was and was not verified.
 
 ## Safety
 

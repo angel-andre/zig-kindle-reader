@@ -30,13 +30,13 @@ Search uses an English keyboard and MuPDF text matching; it scans incrementally 
 
 ## Library and device controls
 
-Recent → Title → Progress cycles sorting. Folder selects relative subfolders; All resets it. Covers are generated lazily only for visible rows; unavailable/complex covers get placeholders. The disk cache is capped at 10 MiB, with 32 thumbnails in RAM. Changed files refresh on a later session, not via a live watcher.
+Recent → Title → Progress cycles sorting. Folder selects relative subfolders; All resets it. Covers are generated lazily only for visible rows; unavailable/complex covers get placeholders. The disk cache is capped at 10 MiB, with 32 thumbnails in RAM. Changed files refresh on a later session, not via a live watcher. Since 0.8.0 cached covers load on a separate worker, new covers show a title/type placeholder immediately, and the next library page is prefetched. The header shows free/total storage and total book size; each row shows type (PDF/EPUB) and file size. A battery bar with percentage sits top-right in library and reader (read-only, polled at most every three minutes, no extra refresh).
 
 Light / Sleep offers separate native 0–24 brightness and warmth controls through `com.lab126.powerd` LIPC. Startup reads values and does not write them; only deliberate adjustments queue a write. No backlight sysfs write is used. Leave experimental power-button sleep OFF until the physical plan in TESTING is completed.
 
 ## Refresh and dark mode
 
-Normal text uses REAGL. Heavy images, substantial dark/light transitions and menu/library context changes request GC16 FULL. Refresh Off/4/8/16 controls periodic text cleans; Off does not disable heavy/context safety cleans. Hardware dark mode is inherited, never toggled by the reader. Host previews do not simulate it.
+Normal text uses REAGL. Heavy images, substantial dark/light transitions and menu/library context changes request GC16 FULL. Refresh Off/4/8/16 controls periodic text cleans (default Off since 0.8.0). Scanned pages with grey paper tone use REAGL; only real photos, covers and context changes get GC16; Off does not disable heavy/context safety cleans. Hardware dark mode is inherited, never toggled by the reader. Host previews do not simulate it.
 
 ## Your data
 

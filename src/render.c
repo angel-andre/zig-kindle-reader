@@ -4,6 +4,12 @@
 #include <string.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdint.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <stdio.h>
+#include <time.h>
 #include "render.h"
 
 /* One locked base context; every zr_doc and the UI use clones of it, as
@@ -40,12 +46,14 @@ static void drop_anchor_index(zr_doc *z);
 struct zr_doc {
 	fz_context *ctx;
 	fz_document *doc;
-	int pages, is_pdf, reflow;
+	int pages, is_pdf, reflow, pending;
 	float spacing;
+ float lw, lh, font, margin;
 	int styled;
 	struct zr_anchor_index *anchor_index;
 	struct { int page; fz_display_list *list; unsigned age; } lists[NLISTS];
 	unsigned tick;
+ fz_cookie cookie;
 };
 
 static void set_css(fz_context *ctx, fz_document *doc, float margin_pt, float font_pt, float spacing, int styled)
@@ -56,15 +64,40 @@ static void set_css(fz_context *ctx, fz_document *doc, float margin_pt, float fo
 	fz_style_document(ctx, doc, 1, css);
 }
 
-zr_doc *zr_open(const char *path, float lw, float lh, float font_pt, float margin_pt)
+/* MuPDF EPUB accelerators cache per-chapter pagination, keyed by file identity
+ * AND all typography. Bounded, disposable user-data cache; never book changes. */
+static char layout_dir[1200];
+static _Thread_local int (*pagination_progress)(int);
+void zr_layout_cache(const char *data) { snprintf(layout_dir,sizeof layout_dir,"%s/layout",data);mkdir(layout_dir,0700);struct stat st;if(lstat(layout_dir,&st)||!S_ISDIR(st.st_mode))layout_dir[0]=0; }
+static uint64_t khash(uint64_t h,const void *data,size_t n){const unsigned char *p=data;while(n--)h=(h^*p++)*1099511628211ULL;return h;}
+static void layout_path(char *out,size_t cap,const char *path,float w,float h,float em,float margin,float spacing,int styled){
+ struct stat st;if(!*layout_dir||stat(path,&st)){*out=0;return;}
+ uint64_t k=khash(14695981039346656037ULL,path,strlen(path));
+ int64_t fields[]={st.st_size,st.st_mtim.tv_sec,st.st_mtim.tv_nsec,8,styled};float f[]={w,h,em,margin,spacing};
+ k=khash(k,fields,sizeof fields);k=khash(k,f,sizeof f);snprintf(out,cap,"%s/%016llx.zra",layout_dir,(unsigned long long)k);
+}
+static void save_layout(zr_doc *z,const char *name){
+ if(!*name||!z->reflow||!fz_document_supports_accelerator(z->ctx,z->doc))return;
+ /* File size ceiling and bounded entry count (<=128 * 16 KiB = 2 MiB). */
+ DIR *d=opendir(layout_dir);if(!d)return;struct dirent *e;int count=0;char victim[1400]="";time_t age=0;
+ while((e=readdir(d))){size_t n=strlen(e->d_name);struct stat st;char p[1400];if(n!=20||strcmp(e->d_name+16,".zra"))continue;snprintf(p,sizeof p,"%s/%s",layout_dir,e->d_name);if(lstat(p,&st)||!S_ISREG(st.st_mode))continue;count++;if(!*victim||st.st_mtime<age){age=st.st_mtime;strcpy(victim,p);}}
+ closedir(d);if(count>=128&&*victim)unlink(victim);
+ char tmp[1400];snprintf(tmp,sizeof tmp,"%s/.layout-XXXXXX",layout_dir);int fd=mkstemp(tmp);if(fd<0)return;close(fd);
+ fz_try(z->ctx){fz_save_accelerator(z->ctx,z->doc,tmp);struct stat st;if(!stat(tmp,&st)&&st.st_size<=16384)rename(tmp,name);}
+ fz_catch(z->ctx){}unlink(tmp);
+}
+static zr_doc *open_style(const char *path,float lw,float lh,float font_pt,float margin_pt,float spacing,int styled,int cover)
 {
 	zr_doc *z = calloc(1, sizeof *z);
 	if (!z) return NULL;
-	z->spacing = 1.4f;
+	z->spacing = spacing; z->styled=styled;
+ z->lw=lw;z->lh=lh;z->font=font_pt;z->margin=margin_pt;
 	z->ctx = zr_new_ctx();
 	if (!z->ctx) { free(z); return NULL; }
 	fz_try(z->ctx) {
-		z->doc = fz_open_document(z->ctx, path);
+		char ap[1400];layout_path(ap,sizeof ap,path,lw,lh,font_pt,margin_pt,spacing,styled);
+        struct stat ast;const char *accel=(cover!=1&&*ap&&!lstat(ap,&ast)&&S_ISREG(ast.st_mode)&&ast.st_size<=16384)?ap:NULL;
+        z->doc = fz_open_accelerated_document(z->ctx,path,accel);
 		char fmt[64] = "";
 		fz_lookup_metadata(z->ctx, z->doc, FZ_META_FORMAT, fmt, sizeof fmt);
 		z->is_pdf = strncmp(fmt, "PDF", 3) == 0;
@@ -73,7 +106,15 @@ zr_doc *zr_open(const char *path, float lw, float lh, float font_pt, float margi
             set_css(z->ctx, z->doc, margin_pt, font_pt, z->spacing, z->styled);
             fz_layout_document(z->ctx, z->doc, lw, lh, font_pt);
         }
-		z->pages = fz_count_pages(z->ctx, z->doc);
+		z->pending = cover==2 && !accel && z->reflow;
+        if(z->reflow && cover==0 && !accel && pagination_progress){
+            z->pages=0;int chapters=fz_count_chapters(z->ctx,z->doc);
+            for(int ch=0;ch<chapters;ch++){
+                z->pages+=fz_count_chapter_pages(z->ctx,z->doc,ch);
+                if(!pagination_progress(z->pages))fz_throw(z->ctx,FZ_ERROR_ABORT,"pagination cancelled");
+            }
+        } else z->pages = z->reflow && (cover==1 || z->pending) ? fz_count_chapter_pages(z->ctx,z->doc,0) : fz_count_pages(z->ctx,z->doc);
+        if(cover!=1&&!z->pending&&z->reflow&&!accel)save_layout(z,ap);
 	}
 	fz_catch(z->ctx) {
 		fz_report_error(z->ctx);
@@ -84,6 +125,13 @@ zr_doc *zr_open(const char *path, float lw, float lh, float font_pt, float margi
 	}
 	return z;
 }
+
+zr_doc *zr_open(const char *path,float w,float h,float em,float margin){return open_style(path,w,h,em,margin,1.4f,0,0);}
+zr_doc *zr_open_style(const char *path,float w,float h,float em,float margin,float spacing){return open_style(path,w,h,em,margin,spacing,1,0);}
+zr_doc *zr_open_initial(const char *path,float w,float h,float em,float margin,float spacing){return open_style(path,w,h,em,margin,spacing,1,2);}
+/* Main-thread hint from the full-pagination worker, no document sharing. */
+void zr_page_count_hint(zr_doc *z,int pages){if(pages>=z->pages){z->pages=pages;z->pending=0;}}
+zr_doc *zr_open_cover(const char *path){return open_style(path,306,407,10.5,18,1.4f,0,1);}
 
 static void drop_lists(zr_doc *z)
 {
@@ -112,12 +160,14 @@ int zr_relayout(zr_doc *z, float lw, float lh, float font_pt, float margin_pt, i
 {
 	int out = page;
 	if (!z->reflow) return page;
+ if(z->styled && z->lw==lw && z->lh==lh && z->font==font_pt && z->margin==margin_pt)return page;
 	fz_try(z->ctx) {
 		fz_bookmark mark = fz_make_bookmark(z->ctx, z->doc, fz_location_from_page_number(z->ctx, z->doc, page));
 		drop_lists(z);
 		drop_anchor_index(z);
 		set_css(z->ctx, z->doc, margin_pt, font_pt, z->spacing, z->styled);
 		fz_layout_document(z->ctx, z->doc, lw, lh, font_pt);
+        z->lw=lw;z->lh=lh;z->font=font_pt;z->margin=margin_pt;
 		z->pages = fz_count_pages(z->ctx, z->doc);
 		out = fz_page_number_from_location(z->ctx, z->doc, fz_lookup_bookmark(z->ctx, z->doc, mark));
 	}
@@ -194,7 +244,7 @@ int zr_ink_bbox(zr_doc *z, int page, float *r, int no_images)
 		fz_clear_pixmap_with_value(ctx, pix, 255);
 		dev = fz_new_draw_device(ctx, fz_identity, pix);
 		maybe_skip_images(dev, no_images);
-		fz_run_display_list(ctx, l, dev, m, fz_infinite_rect, NULL);
+		fz_run_display_list(ctx, l, dev, m, fz_infinite_rect, &z->cookie);
 		fz_close_device(ctx, dev);
 		int w = pix->w, h = pix->h, x0 = w, y0 = h, x1 = -1, y1 = -1;
 		for (int y = 0; y < h; y++) {
@@ -319,7 +369,7 @@ int zr_render_with_stats(zr_doc *z, int page, const float *m6, unsigned char *ou
         }
         maybe_skip_images(dev, no_images);
         fz_device *draw = images ? &images->super : dev;
-        fz_run_display_list(ctx, l, draw, m, fz_make_rect(0, 0, w, h), NULL);
+        fz_run_display_list(ctx, l, draw, m, fz_make_rect(0, 0, w, h), &z->cookie);
         fz_close_device(ctx, draw);
         if (stats && images) {
             size_t area=0;
@@ -566,4 +616,13 @@ void zr_ui_text(zr_ui *u, int font, float size, unsigned char *buf, int w, int h
 		fz_drop_text(ctx, text);
 	}
 	fz_catch(ctx) fz_report_error(ctx);
+}
+
+void zr_cancel(zr_doc *z){z->cookie.abort=1;}
+void zr_reset_cancel(zr_doc *z){z->cookie.abort=0;}
+
+int zr_pagination_pending(zr_doc *z){return z->pending;}
+
+zr_doc *zr_open_worker(const char *path,float w,float h,float em,float margin,float spacing,int (*progress)(int)){
+ pagination_progress=progress;zr_doc *z=open_style(path,w,h,em,margin,spacing,1,0);pagination_progress=NULL;return z;
 }
