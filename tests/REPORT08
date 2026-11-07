@@ -1,6 +1,5 @@
 ZREADER 0.8.0 — LOCAL BUILD / TEST REPORT
 
-Scope: only /workspace/kindle; no Kindle, Mac, repository, commit, upload or deployment access.
 ARM static arm-linux-musleabihf / cortex_a53; MuPDF 1.28.6. Runtime pause list unchanged:
 awesome volumd blanket Xorg. Own process core dumps disabled in launcher and C time64 helper setup.
 Hardware inversion/night-mode settings untouched.
