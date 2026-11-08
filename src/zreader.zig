@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.10.6";
+const VERSION = "0.11.0";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 // v0.10.0 second book font (OFL, Latin subset) and compact Latin hyphenation patterns (MIT).
 const sans_bold = @embedFile("fonts/NotoSans-Bold-Latin.ttf");
@@ -65,6 +65,16 @@ extern fn zr_reset_cancel(z: *ZrDoc) void;
 extern fn zr_close(z: *ZrDoc) void;
 extern fn zr_page_count(z: *ZrDoc) c_int;
 extern fn zr_is_pdf(z: *ZrDoc) c_int;
+extern fn zr_shrink_pdf(in: [*:0]const u8, out: [*:0]const u8, quality: c_int) c_int;
+extern fn zr_shrink_cancel() void;
+extern fn zr_shrink_progress(done: *c_int, total: *c_int) c_int;
+extern fn zr_shrink_start(in: [*:0]const u8, out: [*:0]const u8) c_int;
+extern fn zr_shrink_result() c_int;
+extern fn zr_free_bytes(dir: [*:0]const u8) c_longlong;
+extern fn zr_fsize(p: [*:0]const u8) c_longlong;
+extern fn zr_move_file(src: [*:0]const u8, dst: [*:0]const u8, final: [*]u8, cap: c_int) c_int;
+extern fn zr_dir_size(dir: [*:0]const u8) c_longlong;
+extern fn zr_rm_tree(dir: [*:0]const u8) c_int;
 extern fn zr_drm_check(path: [*:0]const u8) c_int;
 extern fn zr_reflowable(z: *ZrDoc) c_int;
 const Anchor = extern struct { chapter: c_int = -1, start: u32 = 0, end: u32 = 0, hash: u64 = 0 };
@@ -4507,7 +4517,7 @@ var members: [8000]Member = undefined;
 var nmembers: usize = 0;
 var coll_loaded = false;
 var coll_filter: i32 = -1; // -1 none, 0 favourites, k = collection k-1
-const LibMenu = enum { none, book, add, remove, coll, confirm_delete };
+const LibMenu = enum { none, book, add, remove, coll, confirm_delete, shrink_run, shrink_done, shrink_small, orig_confirm };
 var lib_menu: LibMenu = .none;
 var lib_menu_entry: usize = 0;
 var lib_menu_coll: usize = 0;
@@ -4739,6 +4749,106 @@ fn fillStar(cx: i32, cy: i32, r: i32, g: u8) void {
         }
     }
 }
+// ---- v0.11.0 "Shrink for Kindle" ----
+var shrink_msg: [160]u8 = undefined;
+var shrink_msg_len: usize = 0;
+var shrink_tmp: [1100:0]u8 = undefined;
+var shrink_before: i64 = 0;
+var shrink_last: i32 = -1;
+var shrink_tick_us: u64 = 0;
+fn mb(b: i64) f64 {
+    return @as(f64, @floatFromInt(b)) / 1_000_000.0;
+}
+fn setShrinkMsg(comptime f: []const u8, a: anytype) void {
+    shrink_msg_len = if (std.fmt.bufPrint(&shrink_msg, f, a)) |m| m.len else |_| 0;
+}
+fn originalsBytes() i64 {
+    var ob: [600]u8 = undefined;
+    const d = std.fmt.bufPrintSentinel(&ob, "{s}/originals", .{opts.data}, 0) catch return 0;
+    return zr_dir_size(d);
+}
+fn shrinkTmpPath(path: []const u8) ?[:0]const u8 {
+    return std.fmt.bufPrintSentinel(&shrink_tmp, "{s}.shrink-tmp", .{path}, 0) catch null;
+}
+fn startShrink(e: *Entry) void {
+    var pb: [1100]u8 = undefined;
+    const p = std.fmt.bufPrintSentinel(&pb, "{s}", .{e.path}, 0) catch return;
+    const tmp = shrinkTmpPath(e.path) orelse return;
+    shrink_before = zr_fsize(p);
+    const dir = std.fs.path.dirname(e.path) orelse ".";
+    var db: [1100]u8 = undefined;
+    const dz = std.fmt.bufPrintSentinel(&db, "{s}", .{dir}, 0) catch return;
+    const free = zr_free_bytes(dz);
+    if (free >= 0 and free < shrink_before + 20_000_000) {
+        lib_menu = .shrink_small;
+        setShrinkMsg("Not enough free space ({d:.0} MB free, {d:.0} MB needed)", .{ mb(free), mb(shrink_before + 20_000_000) });
+        return markFull(WF_REAGL);
+    }
+    if (zr_shrink_start(p, tmp) != 0) return toast("Could not start", .{});
+    lib_menu = .shrink_run;
+    shrink_last = -1;
+    setShrinkMsg("Shrinking ({d:.1} MB): starting...", .{mb(shrink_before)});
+    markFull(WF_REAGL);
+}
+fn shrinkTick() void {
+    if (lib_menu != .shrink_run) return;
+    var done: c_int = 0;
+    var total: c_int = 0;
+    const ph = zr_shrink_progress(&done, &total);
+    if (ph == 3) {
+        const rc = zr_shrink_result();
+        if (rc != 0) {
+            _ = linux.unlink(&shrink_tmp);
+            lib_menu = .shrink_small;
+            if (rc == 1) setShrinkMsg("Cancelled; the book is unchanged", .{}) else setShrinkMsg("Could not shrink this PDF; the book is unchanged", .{});
+            return markFull(WF_REAGL);
+        }
+        const after = zr_fsize(&shrink_tmp);
+        if (after < 0 or after * 10 > shrink_before * 9) {
+            _ = linux.unlink(&shrink_tmp);
+            lib_menu = .shrink_small;
+            setShrinkMsg("Only {d:.1} -> {d:.1} MB (under 10% smaller); original kept", .{ mb(shrink_before), mb(@max(after, 0)) });
+            return markFull(WF_REAGL);
+        }
+        lib_menu = .shrink_done;
+        setShrinkMsg("{d:.1} MB -> {d:.1} MB ({d}% smaller)", .{ mb(shrink_before), mb(after), 100 - @divTrunc(after * 100, @max(shrink_before, 1)) });
+        return markFull(WF_REAGL);
+    }
+    const now = nowUs();
+    const key: i32 = if (ph == 2) -2 else done;
+    if (key == shrink_last or now -| shrink_tick_us < 1_000_000) return;
+    shrink_last = key;
+    shrink_tick_us = now;
+    const pages = @divTrunc(total, 2);
+    if (ph == 2) setShrinkMsg("Saving smaller copy...", .{}) else if (done < pages) setShrinkMsg("Checking page {d}/{d}", .{ done + 1, pages }) else setShrinkMsg("Shrinking page {d}/{d}", .{ @min(done - pages + 1, pages), pages });
+    markDirty(libMenuRect(1), WF_REAGL);
+}
+fn discardShrunk() void {
+    _ = linux.unlink(&shrink_tmp);
+}
+fn useShrunk(e: *Entry) void {
+    var pb: [1100]u8 = undefined;
+    const p = std.fmt.bufPrintSentinel(&pb, "{s}", .{e.path}, 0) catch return;
+    const rel = if (std.mem.startsWith(u8, e.path, opts.books) and e.path.len > opts.books.len) e.path[opts.books.len + 1 ..] else std.fs.path.basename(e.path);
+    var ob: [1100]u8 = undefined;
+    const dst = std.fmt.bufPrintSentinel(&ob, "{s}/originals/{s}", .{ opts.data, rel }, 0) catch return;
+    var final: [1100]u8 = undefined;
+    if (zr_move_file(p, dst, &final, final.len) != 0) {
+        discardShrunk();
+        return toast("Could not move the original; book unchanged", .{});
+    }
+    if (linux.errno(linux.rename(&shrink_tmp, p)) != .SUCCESS) {
+        // put the original back
+        var back: [1100]u8 = undefined;
+        _ = zr_move_file(@ptrCast(&final), p, &back, back.len);
+        discardShrunk();
+        return toast("Could not replace the book; book unchanged", .{});
+    }
+    const after = zr_fsize(p);
+    if (after > 0) e.bytes = @intCast(after);
+    toast("Smaller copy in use; original in originals/", .{});
+    markFull(WF_REAGL);
+}
 fn libMenuRect(rows: usize) Rect {
     const h: i32 = 140 + @as(i32, @intCast(rows)) * 120;
     return .{ .x = 170, .y = @divTrunc(@as(i32, @intCast(H)) - h, 2), .w = @as(i32, @intCast(W)) - 340, .h = h };
@@ -4764,6 +4874,12 @@ fn libMenuItems(out: *[MAXCOLL + 4][96]u8, lens: *[MAXCOLL + 4]usize, act: *[MAX
             put(out, lens, act, &n, if (e.fav) "Remove from Favourites" else "Favourite", 1);
             put(out, lens, act, &n, "Add to collection", 2);
             if (e.cmask != 0) put(out, lens, act, &n, "Remove from collection", 3);
+            if (e.kind == 0 and !e.epub and std.ascii.endsWithIgnoreCase(e.path, ".pdf")) put(out, lens, act, &n, "Shrink for Kindle", 8);
+            const osz = originalsBytes();
+            if (osz > 0) {
+                var ob: [64]u8 = undefined;
+                put(out, lens, act, &n, std.fmt.bufPrint(&ob, "Delete originals ({d:.1} MB)", .{mb(osz)}) catch "Delete originals", 12);
+            }
             put(out, lens, act, &n, "Cancel", 0);
         },
         .add, .remove => {
@@ -4785,6 +4901,16 @@ fn libMenuItems(out: *[MAXCOLL + 4][96]u8, lens: *[MAXCOLL + 4]usize, act: *[MAX
             put(out, lens, act, &n, "Delete (books are kept)", 7);
             put(out, lens, act, &n, "Cancel", 0);
         },
+        .shrink_run => put(out, lens, act, &n, "Cancel", 9),
+        .shrink_done => {
+            put(out, lens, act, &n, "Use smaller copy", 10);
+            put(out, lens, act, &n, "Discard", 11);
+        },
+        .shrink_small => put(out, lens, act, &n, "OK", 0),
+        .orig_confirm => {
+            put(out, lens, act, &n, "Delete originals permanently", 13);
+            put(out, lens, act, &n, "Cancel", 0);
+        },
         .none => {},
     }
     return n;
@@ -4803,6 +4929,7 @@ fn drawLibMenu() void {
         .coll, .confirm_delete => std.fmt.bufPrint(&tb, "Collection: {s}", .{collName(lib_menu_coll)}) catch "",
         .add => "Add to collection",
         .remove => "Remove from collection",
+        .shrink_run, .shrink_done, .shrink_small, .orig_confirm => shrink_msg[0..shrink_msg_len],
         else => lib[lib_menu_entry].title,
     };
     textFit(SERIF_BOLD, 38, @floatFromInt(m.x + 40), @floatFromInt(m.y + 70), title, @floatFromInt(m.w - 80), 0);
@@ -4820,6 +4947,8 @@ fn libMenuTap(x: i32, y: i32) void {
         hit = true;
     };
     if (!hit and libMenuRect(n).contains(x, y)) return;
+    // Shrink dialogs only close through their buttons (a stray tap must not drop a run).
+    if (!hit and (lib_menu == .shrink_run or lib_menu == .shrink_done)) return;
     const e = &lib[lib_menu_entry];
     lib_menu = .none;
     switch (code) {
@@ -4844,6 +4973,31 @@ fn libMenuTap(x: i32, y: i32) void {
         7 => {
             deleteCollection(lib_menu_coll);
             toast("Collection deleted; books kept", .{});
+        },
+        8 => return startShrink(e),
+        9 => {
+            zr_shrink_cancel();
+            lib_menu = .shrink_run;
+            setShrinkMsg("Cancelling...", .{});
+            return markFull(WF_REAGL);
+        },
+        10 => return useShrunk(e),
+        11 => {
+            discardShrunk();
+            toast("Smaller copy discarded", .{});
+            return markFull(WF_REAGL);
+        },
+        12 => {
+            lib_menu = .orig_confirm;
+            setShrinkMsg("Delete {d:.1} MB of originals? This cannot be undone.", .{mb(originalsBytes())});
+            return markFull(WF_REAGL);
+        },
+        13 => {
+            var ob: [600]u8 = undefined;
+            const d = std.fmt.bufPrintSentinel(&ob, "{s}/originals", .{opts.data}, 0) catch return;
+            _ = zr_rm_tree(d);
+            toast("Originals deleted", .{});
+            return markFull(WF_REAGL);
         },
         else => {
             if (code >= 100) {
@@ -5914,6 +6068,12 @@ fn parseArgs(argv: []const [*:0]const u8) bool {
             i += 1;
             const v = std.mem.span(argv[i]);
             opts.wf = if (eql(v, "gl16")) WF_GL16 else if (eql(v, "reagl")) WF_REAGL else return false;
+        } else if (eql(a, "--shrink") and i + 2 < argv.len) {
+            // v0.11.0: command-line form of "Shrink for Kindle" (IN OUT), for tests.
+            const t0 = nowUs();
+            const rc = zr_shrink_pdf(argv[i + 1], argv[i + 2], 80);
+            std.debug.print("shrink rc={d} ms={d}\n", .{ rc, (nowUs() - t0) / 1000 });
+            linux.exit(if (rc == 0) 0 else 1);
         } else if (eql(a, "--audit-refresh")) {
             opts.audit_refresh = true;
         } else if (eql(a, "--no-clean-scans") or eql(a, "--clean-scans")) {
@@ -6134,6 +6294,7 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
     main_loop: while (!@atomicLoad(bool, &g_quit, .seq_cst) and !quit_requested) {
         tick07();
         libTick();
+        shrinkTick();
         if (screen == .upload) {
             const before = up_rev;
             uploadTick();
@@ -6155,6 +6316,7 @@ pub fn main(init: std.process.Init.Minimal) !u8 {
         if (center_pending) timeout = @min(timeout, 20);
         if (toast_len > 0) timeout = @min(timeout, 200);
         if (lib_hold) timeout = @min(timeout, 15);
+        if (lib_menu == .shrink_run) timeout = @min(timeout, 250);
         if (screen == .upload) timeout = @min(timeout, 250);
         _ = linux.poll(&pfds, nfds, timeout);
         const now = nowUs();
