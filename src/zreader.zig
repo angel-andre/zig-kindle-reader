@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.11.1";
+const VERSION = "0.11.2";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 // v0.10.0 second book font (OFL, Latin subset) and compact Latin hyphenation patterns (MIT).
 const sans_bold = @embedFile("fonts/NotoSans-Bold-Latin.ttf");
@@ -1237,9 +1237,57 @@ fn invalidateView() void {
     editing_note = null;
     _ = pthread_cond_broadcast(&pool.cond);
 }
+// v0.11.2 (pool.mtx held, after invalidateView): zoom in and pan show at once as a draft
+// scaled from the page already on screen; the exact render replaces it with a
+// non-flashing update (as for first-page drafts).
+fn instantDraft(old_i: i32, og: ViewGeometry) void {
+    if (old_i < 0 or draft_slot != null or pool.no_images or !book.is_pdf) return;
+    const src = &pool.slots[@intCast(old_i)];
+    if (src.state != .ready or src.draft) return;
+    const ng = viewGeometry(og.r, pool.view, pool.base_width, pool.step, pool.pan_x, pool.pan_y);
+    if (ng.m[0] < og.m[0] * 0.99) return; // zooming out: nothing useful to scale
+    var di: ?usize = null;
+    for (&pool.slots, 0..) |*slot, i| {
+        if (@as(i32, @intCast(i)) == old_i or slot.state == .rendering) continue;
+        di = i;
+        if (slot.state == .empty or slot.gen != pool.gen) break;
+    }
+    const d = &pool.slots[di orelse return];
+    const t0 = nowUs();
+    defer logf("zoom/pan draft shown from the current page in {d} us", .{nowUs() - t0});
+    const a = og.m[0] / ng.m[0];
+    const bx = og.m[4] - a * ng.m[4];
+    const ay = og.m[3] / ng.m[3];
+    const by = og.m[5] - ay * ng.m[5];
+    const fw: f32 = @floatFromInt(W);
+    const fh: f32 = @floatFromInt(H);
+    for (0..H) |y| {
+        const oy = ay * @as(f32, @floatFromInt(y)) + by;
+        const row = d.buf[y * STRIDE ..][0..W];
+        if (oy < 0 or oy >= fh) {
+            @memset(row, 0xFF);
+            continue;
+        }
+        const srow = src.buf[@as(usize, @intFromFloat(oy)) * STRIDE ..][0..W];
+        for (row, 0..) |*px, x| {
+            const ox = a * @as(f32, @floatFromInt(x)) + bx;
+            px.* = if (ox < 0 or ox >= fw) 0xFF else srow[@intFromFloat(ox)];
+        }
+    }
+    d.page = pool.cur;
+    d.step = pool.step;
+    d.gen = pool.gen;
+    d.geometry = ng;
+    d.m = ng.m;
+    d.metrics = src.metrics;
+    d.state = .ready;
+    d.draft = true;
+    draft_slot = di;
+}
 fn setView(mode: ViewMode, anchor: ?[2]i32) void {
     if (!book.is_pdf) return;
     const geometry = visibleGeometry();
+    const old_shown = pool.shown;
     const point = if (anchor) |p| toPage(p[0], p[1]) else [2]f32{ 0, 0 };
     _ = pthread_mutex_lock(&pool.mtx);
     if (pool.view == .page or pool.view == .width) pool.base_width = pool.view == .width;
@@ -1260,6 +1308,7 @@ fn setView(mode: ViewMode, anchor: ?[2]i32) void {
         if (g.max_y > 0) pool.pan_y = std.math.clamp(((point[1] - g.r[1]) * g.m[3] - @as(f32, @floatFromInt(p[1]))) / g.max_y, 0, 1);
     }
     invalidateView();
+    if (geometry) |og| if (mode == .zoom15 or mode == .zoom2) instantDraft(old_shown, og);
     _ = pthread_mutex_unlock(&pool.mtx);
     logf("PDF view: {s}", .{VIEW_NAMES[@backingInt(mode)]});
 }
@@ -1427,6 +1476,7 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
         pool.busy -= 1;
         pool.render_us.add(dt);
         noteSlowPage(dt);
+        if (dt > 150_000) logf("slow render: p={d} step={d} view={s} ms={d}", .{ job.p + 1, job.step, @tagName(mode), dt / 1000 });
         _ = pthread_cond_broadcast(&pool.cond);
         _ = linux.write(pool.pipe_w, "r", 1);
     }
@@ -5753,10 +5803,12 @@ const MOVE_TOL: i32 = 36;
 
 fn finishPan(dx: i32, dy: i32) void {
     const g = visibleGeometry() orelse return;
+    const old_shown = pool.shown;
     _ = pthread_mutex_lock(&pool.mtx);
     if (g.max_x > 0) pool.pan_x = std.math.clamp(pool.pan_x - @as(f32, @floatFromInt(dx)) / g.max_x, 0, 1);
     if (g.max_y > 0) pool.pan_y = std.math.clamp(pool.pan_y - @as(f32, @floatFromInt(dy)) / g.max_y, 0, 1);
     invalidateView();
+    instantDraft(old_shown, g);
     _ = pthread_mutex_unlock(&pool.mtx);
     logf("PDF pan: x={d:.3} y={d:.3}", .{ pool.pan_x, pool.pan_y });
 }

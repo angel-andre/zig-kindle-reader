@@ -2,6 +2,10 @@
 
 Earlier versions were early prototypes and are not listed.
 
+## 0.11.2
+
+Instant zoom and pan. Zooming in or panning on a PDF now shows an immediate scaled copy of the current screen (a few milliseconds) while the sharp page renders, then replaces it in place; the final page is identical to 0.11.1. Renders slower than 150 ms are logged as `slow render` lines with page, step, view and time, to help find slow books. Digital PDFs and EPUBs render exactly as before.
+
 ## 0.11.1
 
 Two-page scans, one page at a time. Scanned PDFs where each page is a landscape scan of two book pages (an image covering almost the whole page) are now shown one book page at a time, full screen in portrait: the next tap shows the right-hand page, the next one the following scan's left-hand page, and back taps go the other way. The gutter is found automatically (the widest band without text near the middle of the scan; the exact centre if there is none), and the facing page never shows at the edge. The other half and the following pages are pre-rendered as before, so turns stay fast with no extra flashes. Your position remembers the half, so a book reopens on the same page; older saved positions open on the left half. The page number shown stays the real PDF page, with L or R in the menu (for example “Page 58 L of 188”). A per-book **Split: on/off** button in the in-book menu (on by default) turns it off for a book. Portrait pages, digital PDFs and EPUBs are not affected.
