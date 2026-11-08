@@ -16,7 +16,7 @@ Version **0.11.5** · tested on a Kindle Paperwhite 12th generation (1272×1696)
 
 ## Why
 
-A weekend project. The stock Kindle software handles PDFs and scanned books poorly, and KOReader, while very capable, felt slow on this device for the owner's use (page turns and taps lagging). Zigg Reader is a small native program focused on fast page turns, good handling of large and scanned PDFs, and an e-ink-friendly interface. It is not firmware: it pauses the stock interface while it runs and restores it on exit.
+A weekend project. The stock Kindle software handles PDFs and scanned books poorly, and KOReader, while very capable, felt slow on this device for my use (page turns and taps lagging). Zigg Reader is a small native program focused on fast page turns, good handling of large and scanned PDFs, and an e-ink-friendly interface. It is not firmware: it pauses the stock interface while it runs and restores it on exit.
 
 ## Features
 
@@ -116,6 +116,31 @@ Full list: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 | 0.11.2 | Instant zoom/pan preview; slow-render log. |
 | 0.11.1 | Two-page scans shown one page at a time. |
 | 0.11.0 | Shrink for Kindle. |
+| 0.10.6 | Readable highlights on scanned pages; accented letters on the keyboard. |
+| 0.10.5 | Heavy scanned pages shown as a draft first; the page you wait for comes before pre-rendering. |
+| 0.10.4 | Fast first page on scanned PDFs. |
+| 0.10.3 | Offline Latin dictionary in Look up. |
+| 0.10.2 | MOBI, AZW3, TXT, CBZ and FB2 support. |
+| 0.10.1 | Contents for books without an outline (detected chapter headings). |
+| 0.10.0 | Better EPUB text: Align and Font options. |
+| 0.9.9 | Battery saving and a low-battery warning. |
+| 0.9.8 | Collections, favourites and size sort. |
+| 0.9.7 | Reading stats, kept on the Kindle only. |
+| 0.9.6 | Highlights and notes, with export. |
+| 0.9.5 | Bookmarks. |
+| 0.9.4 | Tidier in-book menu; faster launch and scans. |
+| 0.9.3 | Fast, clean Internet Archive scans. |
+| 0.9.2 | Clean up scanned pages setting. |
+| 0.9.1 | Wi-Fi book uploads. |
+| 0.9.0 | Instant reopen at the saved page. |
+| 0.8.2 | Fast library taps no longer exit; new exit shortcut. |
+| 0.8.1 | No flicker on library page changes while covers load; book count. |
+| 0.8.0 | Scanned-book flicker fix; cover cache; faster first page. |
+| 0.7 | Lazy library covers, sorting and progress bars; frontlight and warmth. |
+| 0.6 | PDF fit/zoom and pan; EPUB typography; offline dictionary; search; exports. |
+| 0.5.1 | Refresh modes tuned for text and images; full refresh setting. |
+| 0.5 | Precise word selection; underlines and highlights; notes. |
+| 0.4 | Baseline: PDF/EPUB reading, library, saved position, pre-rendering. |
 
 Everything else: [CHANGELOG.md](CHANGELOG.md).
 
