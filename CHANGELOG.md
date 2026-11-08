@@ -2,6 +2,10 @@
 
 Earlier versions were early prototypes and are not listed.
 
+## 0.11.4
+
+Delete book and Dark theme. Long-press a book in the library for **Delete book** (all formats): a confirm screen shows the title with **Cancel** first and **Delete book permanently** below; taps within a second of the screen appearing or of the previous tap are ignored, so double or fast taps never confirm and never exit. Before deleting, the book's highlights and notes are exported to `export/` (the notes file is kept); then only the book file is deleted, and only if it is a real file inside the books folder (symlinks and paths outside are refused). Its saved position, kept original in `originals/`, favourite and collection entries and last-book entry are removed, and the library redraws in place. A read-only or failed delete shows a message and changes nothing. **Theme: Light / Dark** in Settings (saved in `ui07.json`, default Light): Dark shows the library, menus and book pages inverted (black paper, white text; highlights, ribbons and selection stay visible) with one redraw when switching and no extra refreshes. Dark uses the e-ink panel's invert support, so it depends on the device honouring it. Light renders exactly as 0.11.3.
+
 ## 0.11.3
 
 Better scanned books. **Shrink for Kindle** now really reduces oversized scan images to the target resolution (before, images less than twice the target were left at full size); re-shrink books shrunk with 0.11.0 to 0.11.2 to benefit: a 300 dpi scan becomes about half the size and its pages render roughly twice as fast. **Trim** now finds the text area on real scans (a page that is one big image with no vector drawing), ignoring dark page-edge bands and specks; digital pages trim exactly as before. **Clean up scanned pages** adds a gentle sharpen on text edges, skipping photo-like areas. Digital PDFs and EPUBs render exactly as before.

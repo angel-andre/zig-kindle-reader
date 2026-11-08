@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.11.3";
+const VERSION = "0.11.4";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 // v0.10.0 second book font (OFL, Latin subset) and compact Latin hyphenation patterns (MIT).
 const sans_bold = @embedFile("fonts/NotoSans-Bold-Latin.ttf");
@@ -75,6 +75,7 @@ extern fn zr_fsize(p: [*:0]const u8) c_longlong;
 extern fn zr_move_file(src: [*:0]const u8, dst: [*:0]const u8, final: [*]u8, cap: c_int) c_int;
 extern fn zr_dir_size(dir: [*:0]const u8) c_longlong;
 extern fn zr_rm_tree(dir: [*:0]const u8) c_int;
+extern fn zr_safe_delete(root: [*:0]const u8, path: [*:0]const u8) c_int;
 extern fn zr_drm_check(path: [*:0]const u8) c_int;
 extern fn zr_reflowable(z: *ZrDoc) c_int;
 const Anchor = extern struct { chapter: c_int = -1, start: u32 = 0, end: u32 = 0, hash: u64 = 0 };
@@ -642,6 +643,7 @@ fn sendUpdate(r0: Rect, mode: u32, upd: u32) u32 {
     if (r.empty()) return marker;
     var u = makeUpdate(r, mode, upd);
     u.update_marker = marker;
+    if (dark_theme) u.flags |= EPDC_FLAG_ENABLE_INVERSION;
     if (bad(linux.ioctl(fb_fd, MXCFB_SEND_UPDATE_MTK, @intFromPtr(&u)))) logf("SEND_UPDATE_MTK failed for {d}x{d}+{d}+{d}", .{ r.w, r.h, r.x, r.y });
     return marker;
 }
@@ -2469,13 +2471,25 @@ var sleep_since: u64 = 0;
 var sleep_external = false;
 var sleep_confirmed = false;
 var sim_powerd_events: c_int = 0;
+// v0.11.4 Theme: Dark = whole display inverted by the e-ink controller
+// (EPDC_FLAG_ENABLE_INVERSION on every update): pure black paper, white text,
+// highlights and ribbons inverted with everything else; no extra refreshes.
+var dark_theme = false;
+const EPDC_FLAG_ENABLE_INVERSION: u32 = 0x01;
+fn themeButton() Rect {
+    return .{ .x = 70, .y = 925, .w = @as(i32, @intCast(W)) - 140, .h = 100 };
+}
 fn ui07Path(out: []u8) [:0]u8 {
     return std.fmt.bufPrintSentinel(out, "{s}/ui07.json", .{opts.data}, 0) catch unreachable;
 }
 fn saveUi07() void {
     var path: [1200]u8 = undefined;
     var buf: [120]u8 = undefined;
-    const data = std.fmt.bufPrint(&buf, "{{\"sort\":{d},\"power_sleeps\":{d},\"clean_scans\":{d},\"text_mode\":{d},\"book_font\":{d}}}\n", .{ lib_sort, @intFromBool(power_sleeps), @intFromBool(opts.clean_scans), text_mode, book_font }) catch return;
+    // v0.11.4: "theme" is written only when Dark, so Light keeps the 0.11.3 file byte-identical.
+    const data = (if (dark_theme)
+        std.fmt.bufPrint(&buf, "{{\"sort\":{d},\"power_sleeps\":{d},\"clean_scans\":{d},\"text_mode\":{d},\"book_font\":{d},\"theme\":1}}\n", .{ lib_sort, @intFromBool(power_sleeps), @intFromBool(opts.clean_scans), text_mode, book_font })
+    else
+        std.fmt.bufPrint(&buf, "{{\"sort\":{d},\"power_sleeps\":{d},\"clean_scans\":{d},\"text_mode\":{d},\"book_font\":{d}}}\n", .{ lib_sort, @intFromBool(power_sleeps), @intFromBool(opts.clean_scans), text_mode, book_font })) catch return;
     if (!writeFileAtomic(ui07Path(&path), data)) toast("Could not save library/sleep settings", .{});
 }
 fn init07() void {
@@ -2489,6 +2503,7 @@ fn init07() void {
         if (!opts.clean_cli) opts.clean_scans = (jsonNum(data, "clean_scans") orelse 1) != 0;
         if (jsonNum(data, "text_mode")) |v| text_mode = @intFromFloat(std.math.clamp(v, 0, 2));
         if (jsonNum(data, "book_font")) |v| book_font = @intFromFloat(std.math.clamp(v, 0, 2));
+        dark_theme = (jsonNum(data, "theme") orelse 0) == 1;
     }
     if (opts.text_mode) |m| text_mode = m;
     // Host tests written before 0.10.0 lay out EPUBs independently with the 0.9.x
@@ -2616,8 +2631,7 @@ fn drawDevice() void {
         fill(.{ .x = r.x, .y = r.y + 44, .w = x - r.x, .h = 12 }, 0x33);
         fill(.{ .x = x - 14, .y = r.y + 18, .w = 28, .h = 64 }, 0);
     }
-    text(SANS, 28, 70, 960, "powerd controls the curves. No dark-mode changes.", 0x55);
-    text(SANS, 28, 70, 1010, "Values are written only when you change them.", 0x55);
+    button(themeButton(), if (dark_theme) "Theme: Dark" else "Theme: Light", dark_theme);
     button(sleepButton(), if (power_sleeps) "Power button sleeps: ON" else "Power button sleeps: OFF", power_sleeps);
     text(SANS, 28, 70, 1300, "Opt-in / experimental: test wake with SSH available.", 0x55);
     text(SANS, 28, 70, 1350, "OFF keeps the original power-button exit behavior.", 0x55);
@@ -2713,6 +2727,12 @@ fn deviceTap(x: i32, y: i32) void {
     if (topButton(true).contains(x, y)) return showScreen(device_return);
     if (statsButton().contains(x, y)) return openStats();
     if (uploadButton().contains(x, y)) return showScreen(.upload);
+    if (themeButton().contains(x, y)) {
+        dark_theme = !dark_theme;
+        saveUi07();
+        logf("theme: {s}", .{if (dark_theme) "dark" else "light"});
+        return markFull(WF_REAGL);
+    }
     if (cleanButton().contains(x, y)) {
         opts.clean_scans = !opts.clean_scans;
         saveUi07();
@@ -4681,7 +4701,7 @@ var members: [8000]Member = undefined;
 var nmembers: usize = 0;
 var coll_loaded = false;
 var coll_filter: i32 = -1; // -1 none, 0 favourites, k = collection k-1
-const LibMenu = enum { none, book, add, remove, coll, confirm_delete, shrink_run, shrink_done, shrink_small, orig_confirm };
+const LibMenu = enum { none, book, add, remove, coll, confirm_delete, shrink_run, shrink_done, shrink_small, orig_confirm, book_delete };
 var lib_menu: LibMenu = .none;
 var lib_menu_entry: usize = 0;
 var lib_menu_coll: usize = 0;
@@ -5013,6 +5033,57 @@ fn useShrunk(e: *Entry) void {
     toast("Smaller copy in use; original in originals/", .{});
     markFull(WF_REAGL);
 }
+
+// ---- v0.11.4 "Delete book" ----
+var del_shown_us: u64 = 0;
+fn deleteBook(e: *Entry) void {
+    var pb: [1100]u8 = undefined;
+    const p = std.fmt.bufPrintSentinel(&pb, "{s}", .{e.path}, 0) catch return toast("Could not delete", .{});
+    var rb: [1100]u8 = undefined;
+    const root = std.fmt.bufPrintSentinel(&rb, "{s}", .{opts.books}, 0) catch return toast("Could not delete", .{});
+    // 1. export highlights/notes/bookmarks first (DATA/export), if there are any
+    const base = if (std.mem.lastIndexOfScalar(u8, e.path, '/')) |i| e.path[i + 1 ..] else e.path;
+    const stem = if (std.mem.lastIndexOfScalar(u8, base, '.')) |i| base[0..i] else base;
+    var clean: [256]u8 = undefined;
+    const cl = @min(stem.len, clean.len);
+    for (stem[0..cl], 0..) |c, i| clean[i] = if (c == '/' or c == '\\' or c == ':' or c == '"' or c < 0x20) '_' else c;
+    var nb: [1400]u8 = undefined;
+    if (std.fmt.bufPrintSentinel(&nb, "{s}/notes/{s}.json", .{ opts.data, clean[0..cl] }, 0)) |np| {
+        if (readExportFile(np)) |data| {
+            defer alloc.free(data);
+            if (std.mem.trim(u8, data, " \r\n\t").len > 2 and !exportJson(clean[0..cl], data)) return toast("Could not export notes; book kept", .{});
+        }
+    } else |_| {}
+    // 2. the book file itself, only inside the books root (no symlink escape)
+    const rc = zr_safe_delete(root, p);
+    if (rc == -1) return toast("Not deleted: outside the books folder", .{});
+    if (rc != 0) return toast("Could not delete (read-only?); book kept", .{});
+    logf("deleted book: {s}", .{e.path});
+    // 3. everything that belonged to it
+    var sb: [1200]u8 = undefined;
+    const sp = statePath(e.path, &sb);
+    if (std.fmt.bufPrintSentinel(&nb, "{s}", .{sp}, 0)) |z| _ = linux.unlink(z) else |_| {}
+    const rel = if (std.mem.startsWith(u8, e.path, opts.books) and e.path.len > opts.books.len) e.path[opts.books.len + 1 ..] else base;
+    if (std.fmt.bufPrintSentinel(&nb, "{s}/originals/{s}", .{ opts.data, rel }, 0)) |z| _ = linux.unlink(z) else |_| {}
+    if (std.fmt.bufPrintSentinel(&nb, "{s}/last_book", .{opts.data}, 0)) |z| {
+        if (readExportFile(z)) |lb| {
+            defer alloc.free(lb);
+            if (eql(std.mem.trim(u8, lb, " \n"), e.path)) _ = linux.unlink(z);
+        }
+    } else |_| {}
+    if (e.fav) setMember(-1, e, false);
+    for (0..ncoll) |c| if ((e.cmask >> @intCast(c)) & 1 != 0) setMember(@intCast(c), e, false);
+    saveCollections();
+    // 4. library refresh in place, same page when it still exists
+    const keep = list_page;
+    scanLibrary();
+    filterLibrary();
+    list_page = keep;
+    const per = rowsPerPage();
+    while (list_page > 0 and list_page * per >= libraryCount()) list_page -= 1;
+    toast("Book deleted", .{});
+    markFull(WF_REAGL);
+}
 fn libMenuRect(rows: usize) Rect {
     const h: i32 = 140 + @as(i32, @intCast(rows)) * 120;
     return .{ .x = 170, .y = @divTrunc(@as(i32, @intCast(H)) - h, 2), .w = @as(i32, @intCast(W)) - 340, .h = h };
@@ -5044,7 +5115,13 @@ fn libMenuItems(out: *[MAXCOLL + 4][96]u8, lens: *[MAXCOLL + 4]usize, act: *[MAX
                 var ob: [64]u8 = undefined;
                 put(out, lens, act, &n, std.fmt.bufPrint(&ob, "Delete originals ({d:.1} MB)", .{mb(osz)}) catch "Delete originals", 12);
             }
+            put(out, lens, act, &n, "Delete book", 14);
             put(out, lens, act, &n, "Cancel", 0);
+        },
+        .book_delete => {
+            // Cancel first (the safe default); Delete needs a separate, later tap.
+            put(out, lens, act, &n, "Cancel", 0);
+            put(out, lens, act, &n, "Delete book permanently", 15);
         },
         .add, .remove => {
             for (0..ncoll) |c| {
@@ -5081,6 +5158,7 @@ fn libMenuItems(out: *[MAXCOLL + 4][96]u8, lens: *[MAXCOLL + 4]usize, act: *[MAX
 }
 fn drawLibMenu() void {
     if (lib_menu == .none) return;
+    if (lib_menu == .book_delete and del_shown_us == 0) del_shown_us = nowUs();
     var items: [MAXCOLL + 4][96]u8 = undefined;
     var lens: [MAXCOLL + 4]usize = undefined;
     var act: [MAXCOLL + 4]i32 = undefined;
@@ -5094,6 +5172,7 @@ fn drawLibMenu() void {
         .add => "Add to collection",
         .remove => "Remove from collection",
         .shrink_run, .shrink_done, .shrink_small, .orig_confirm => shrink_msg[0..shrink_msg_len],
+        .book_delete => std.fmt.bufPrint(&tb, "Delete \"{s}\"?", .{lib[lib_menu_entry].title}) catch "Delete this book?",
         else => lib[lib_menu_entry].title,
     };
     textFit(SERIF_BOLD, 38, @floatFromInt(m.x + 40), @floatFromInt(m.y + 70), title, @floatFromInt(m.w - 80), 0);
@@ -5113,6 +5192,12 @@ fn libMenuTap(x: i32, y: i32) void {
     if (!hit and libMenuRect(n).contains(x, y)) return;
     // Shrink dialogs only close through their buttons (a stray tap must not drop a run).
     if (!hit and (lib_menu == .shrink_run or lib_menu == .shrink_done)) return;
+    // Delete confirm: a tap within 1 s of the screen appearing or of the previous tap
+    // does nothing and restarts the 1 s window, so double/fast taps never confirm.
+    if (lib_menu == .book_delete and (del_shown_us == 0 or nowUs() -| del_shown_us < 1_000_000)) {
+        if (del_shown_us != 0) del_shown_us = nowUs();
+        return;
+    }
     const e = &lib[lib_menu_entry];
     lib_menu = .none;
     switch (code) {
@@ -5156,6 +5241,12 @@ fn libMenuTap(x: i32, y: i32) void {
             setShrinkMsg("Delete {d:.1} MB of originals? This cannot be undone.", .{mb(originalsBytes())});
             return markFull(WF_REAGL);
         },
+        14 => {
+            lib_menu = .book_delete;
+            del_shown_us = 0; // set when the confirm screen is actually drawn
+            return markFull(WF_REAGL);
+        },
+        15 => return deleteBook(e),
         13 => {
             var ob: [600]u8 = undefined;
             const d = std.fmt.bufPrintSentinel(&ob, "{s}/originals", .{opts.data}, 0) catch return;
@@ -6139,6 +6230,10 @@ fn writeShot(i: usize) void {
     b.print("P5 {d} {d} 255\n", .{ W, H });
     var y: usize = 0;
     while (y < H) : (y += 1) b.put(fb[y * STRIDE ..][0..W]);
+    // the sim shows what the panel shows: inverted in Dark
+    if (dark_theme) for (b.b[b.n - W * H .. b.n]) |*px| {
+        px.* = 255 - px.*;
+    };
     _ = writeFileAtomic(p, b.slice());
     logf("shot {s}", .{p});
 }

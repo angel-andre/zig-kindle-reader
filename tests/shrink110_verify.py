@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory(dir=T,prefix='shrink110-') as t:
 long 636 {ROW(0)}
 wait 500
 shot shr_menu
-tap 636 {menu_btn(4,2)}
+tap 636 {menu_btn(5,2)}
 wait 150
 tap 1200 200
 wait 40
@@ -47,7 +47,7 @@ shot shr_used
 long 636 {ROW(0)}
 wait 500
 shot shr_menu2
-tap 636 {menu_btn(5,3)}
+tap 636 {menu_btn(6,3)}
 wait 400
 shot shr_confirm
 tap 636 {menu_btn(2,0)}

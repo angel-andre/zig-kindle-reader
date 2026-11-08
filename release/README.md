@@ -1,10 +1,10 @@
-# 0.11.3 runtime (current)
+# 0.11.4 runtime (current)
 
-`zr113.tgz` is the 0.11.3 runtime (better scanned books), tested on a Kindle Paperwhite 12th gen. SHA-256: `12d029879cf28babbee857a01b18d98ff903d71e20715865b04cad6450a56d52`; the reader binary inside is `8c13dc2d1293c21ba0061c7e19f07f5b79a7aed14761f81e6c822cfec7063ca2` and `zreader --version` prints `zreader 0.11.3`. The dictionaries are unchanged from 0.10.3. `zr113-sizes.json` records its build sizes.
+`zr114.tgz` is the 0.11.4 runtime (Delete book, Theme Light/Dark), tested on a Kindle Paperwhite 12th gen. SHA-256: `a76ae8c8d3cc139d37e648e7b99b07c3c10d03ecccc0ca7639fa426b51f1626e`; the reader binary inside is `0f88d758cba0183900471dd05713025acaa51071e5b0f3e5ec7578d72da3462f` and `zreader --version` prints `zreader 0.11.4`. The dictionaries are unchanged from 0.10.3. `zr114-sizes.json` records its build sizes.
 
-# 0.11.2 runtime (rollback)
+# 0.11.3 runtime (rollback)
 
-`zr112.tgz` is the previous release, kept for rollback (instant zoom and pan feedback), tested on a Kindle Paperwhite 12th gen. SHA-256: `81a3529466ec71a646d8e42b06161d013a056e104f2ca36b6e4bcb0eda620fed`; the reader binary inside is `f4a861ba98586f69e4b7dd77f61b8292fb82be932ff4bb6fce40182574df0144` and `zreader --version` prints `zreader 0.11.2`. The dictionaries are unchanged from 0.10.3. `zr112-sizes.json` records its build sizes.
+`zr113.tgz` is the previous release, kept for rollback (better scanned books), tested on a Kindle Paperwhite 12th gen. SHA-256: `12d029879cf28babbee857a01b18d98ff903d71e20715865b04cad6450a56d52`; the reader binary inside is `8c13dc2d1293c21ba0061c7e19f07f5b79a7aed14761f81e6c822cfec7063ca2` and `zreader --version` prints `zreader 0.11.3`. The dictionaries are unchanged from 0.10.3. `zr113-sizes.json` records its build sizes.
 
 Older packages are no longer included; their source is in the git history.
 

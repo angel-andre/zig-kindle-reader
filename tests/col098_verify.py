@@ -34,18 +34,18 @@ shot col_library
 long 636 {ROW(0)}
 wait 500
 shot col_book_menu
-tap 636 {menu_btn(3,0)}
+tap 636 {menu_btn(4,0)}
 wait 600
 long 636 {ROW(0)}
 wait 500
-tap 636 {menu_btn(3,1)}
+tap 636 {menu_btn(4,1)}
 wait 500
 shot col_add_menu
 tap 636 {menu_btn(2,0)}
 wait 700
 '''+typed('classics')+'shot col_name_editor\n'+SAVE+f'''long 636 {ROW(1)}
 wait 500
-tap 636 {menu_btn(3,1)}
+tap 636 {menu_btn(4,1)}
 wait 500
 tap 636 {menu_btn(3,0)}
 wait 800

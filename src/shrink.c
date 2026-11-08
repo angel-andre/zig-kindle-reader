@@ -196,3 +196,34 @@ int zr_rm_tree(const char *dir)
 	closedir(dp);
 	return 0;
 }
+
+/* v0.11.4 "Delete book": unlink one regular file that really lives inside the
+ * books root. Symlinks (the file itself, or any directory escaping the root)
+ * are refused. 0 = deleted, -1 = refused, -2 = could not delete. */
+#include <limits.h>
+#include <stdlib.h>
+#include <errno.h>
+int zr_safe_delete(const char *root, const char *path)
+{
+	char r[PATH_MAX], p[PATH_MAX];
+	struct stat st;
+	if (!root || !path || !*root || !*path) return -1;
+	if (lstat(path, &st) != 0 || !S_ISREG(st.st_mode)) return -1;
+	if (!realpath(root, r) || !realpath(path, p)) return -1;
+	size_t n = strlen(r);
+	if (n == 0 || strncmp(p, r, n) != 0 || p[n] != '/') return -1;
+	if (strcmp(p, path) != 0) {
+		/* the given path must resolve to itself: no symlinked directories on the way */
+		char g[PATH_MAX]; size_t gl = strlen(path);
+		if (gl >= sizeof g) return -1;
+		memcpy(g, path, gl + 1);
+		/* allow a symlinked or relative ROOT, but nothing below it */
+		char rr[PATH_MAX];
+		size_t rl = strlen(root);
+		if (strncmp(path, root, rl) != 0 || path[rl] != '/') return -1;
+		if (snprintf(rr, sizeof rr, "%s%s", r, path + rl) >= (int)sizeof rr) return -1;
+		if (strcmp(rr, p) != 0) return -1;
+	}
+	if (access(p, W_OK) != 0 && errno == EROFS) return -2;
+	return unlink(p) == 0 ? 0 : -2;
+}
