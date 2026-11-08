@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.11.0";
+const VERSION = "0.11.1";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 // v0.10.0 second book font (OFL, Latin subset) and compact Latin hyphenation patterns (MIT).
 const sans_bold = @embedFile("fonts/NotoSans-Bold-Latin.ttf");
@@ -940,6 +940,7 @@ const Pool = struct {
     npages: i32 = 0,
     paginating: bool = false,
     trim: bool = false,
+    split: bool = true,
     no_images: bool = false,
     trims: []Trim = &.{},
     font: f32 = 10.5,
@@ -982,10 +983,14 @@ fn wantedList(out: *[10]ViewKey) usize {
             }
         }
     }
+    if (splitActive() and c >= 0 and c < MAX_SPREAD_PAGES and spreads[@intCast(c)] > 0) {
+        seq[count] = .{ .p = c, .step = if (pool.step == 0) 1 else 0 };
+        count += 1;
+    }
     const pages = [_]i32{ c + d, c + 2 * d, c + 3 * d, c + 4 * d, c - d, c - 2 * d };
     for (pages) |page| {
         if (count < seq.len) {
-            seq[count] = .{ .p = page, .step = if (pool.view == .width and page < c) -1 else 0 };
+            seq[count] = .{ .p = page, .step = if ((pool.view == .width or splitActive()) and page < c) -1 else 0 };
             count += 1;
         }
     }
@@ -1096,6 +1101,107 @@ const ViewGeometry = struct { m: [6]f32 = .{ 1, 0, 0, 1, 0, 0 }, r: [4]f32 = .{ 
 fn viewUsesTrim(pdf: bool, trim: bool, mode: ViewMode, base_width: bool) bool {
     return pdf and (trim or mode == .width or (base_width and (mode == .zoom15 or mode == .zoom2)));
 }
+// ---- v0.11.1: two-page scans (landscape page that is one big image) are shown as two halves ----
+const MAX_SPREAD_PAGES = 20000;
+var spreads: [MAX_SPREAD_PAGES]f32 = @splat(0); // 0 unknown, <0 not a spread, else split x (page units)
+fn resetSpreads() void {
+    @memset(&spreads, 0);
+}
+fn detectSpread(doc: *ZrDoc, p: i32, slot_i: usize) f32 {
+    var b: [4]f32 = undefined;
+    if (zr_page_bounds(doc, p, &b) != 0) return -1;
+    const w = b[2] - b[0];
+    const h = b[3] - b[1];
+    if (h <= 1 or w / h < 1.15) return -1;
+    const TW: usize = 400;
+    const th: usize = @min(560, @as(usize, @intFromFloat(@max(1, @round(h * 400 / w)))));
+    const sc: f32 = 400 / w;
+    const m = [6]f32{ sc, 0, 0, sc, -b[0] * sc, -b[1] * sc };
+    _ = slot_i;
+    const buf = alloc.alloc(u8, 400 * 560) catch return -1;
+    defer alloc.free(buf);
+    var rs: ZrRenderStats = .{};
+    if (zr_render_with_stats(doc, p, &m, buf.ptr, @intCast(TW), @intCast(th), @intCast(TW), 0, 0, &rs) != 0) return -1;
+    if (rs.image_coverage < 0.85) return -1;
+    return b[0] + gutterColumn(buf[0 .. TW * th], TW, th) * w / @as(f32, @floatFromInt(TW));
+}
+// Column (in thumbnail pixels) to split at: the middle of the widest band without text
+// between 35% and 65% of the width. Text columns have many light/dark edges; blank paper and
+// the spine shadow (dark but smooth) have few. Exact centre if no such band is found.
+fn gutterColumn(px: []const u8, tw: usize, th: usize) f32 {
+    const y0 = th / 12;
+    const y1 = th - th / 12;
+    const c0 = tw * 35 / 100;
+    const c1 = tw * 65 / 100;
+    var edges: [512]u32 = @splat(0);
+    var maxe: u32 = 0;
+    for (c0..c1) |c| {
+        var e: u32 = 0;
+        var y = y0 + 1;
+        while (y < y1) : (y += 1) {
+            const a0: i32 = px[(y - 1) * tw + c];
+            const a1: i32 = px[y * tw + c];
+            if (@abs(a1 - a0) > 48) e += 1;
+        }
+        edges[c] = e;
+        maxe = @max(maxe, e);
+    }
+    if (maxe < 8) return @as(f32, @floatFromInt(tw)) / 2;
+    const quiet = @max(maxe / 8, 2);
+    var best_len: usize = 0;
+    var best_mid: f32 = @as(f32, @floatFromInt(tw)) / 2;
+    var c = c0;
+    while (c < c1) {
+        if (edges[c] > quiet) {
+            c += 1;
+            continue;
+        }
+        const st = c;
+        while (c < c1 and edges[c] <= quiet) c += 1;
+        if (c - st > best_len) {
+            best_len = c - st;
+            best_mid = @as(f32, @floatFromInt(st + c)) / 2;
+        }
+    }
+    if (best_len < 2) return @as(f32, @floatFromInt(tw)) / 2;
+    return best_mid;
+}
+fn spreadSplit(doc: *ZrDoc, p: i32, slot_i: usize) f32 {
+    if (!book.is_pdf or !pool.split or p < 0 or p >= MAX_SPREAD_PAGES) return -1;
+    const i: usize = @intCast(p);
+    if (spreads[i] == 0) spreads[i] = detectSpread(doc, p, slot_i);
+    return spreads[i];
+}
+fn viewGeometryP(doc: *ZrDoc, p: i32, slot_i: usize, r: [4]f32, mode: ViewMode, base_width: bool, step: i32, px: f32, py: f32) ViewGeometry {
+    if (mode != .page or !book.is_pdf or !pool.split) return viewGeometry(r, mode, base_width, step, px, py);
+    const xs = spreadSplit(doc, p, slot_i);
+    if (xs <= r[0] + 1 or xs >= r[2] - 1) return viewGeometry(r, mode, base_width, step, px, py);
+    const actual: i32 = if (step < 0) 1 else @min(step, 1);
+    const half: [4]f32 = if (actual == 0) .{ r[0], r[1], xs, r[3] } else .{ xs, r[1], r[2], r[3] };
+    return .{ .m = fitMatrix(half), .r = half, .steps = 2, .actual_step = actual };
+}
+// The fitted half is narrower than the screen; paint the side strips white so the facing
+// page (beyond the split) never shows.
+fn clipHalf(buf: []u8, g: ViewGeometry) void {
+    if (g.steps != 2 or !splitActive()) return;
+    const fx0 = g.m[0] * g.r[0] + g.m[4];
+    const fx1 = g.m[0] * g.r[2] + g.m[4];
+    const x0: usize = @intFromFloat(std.math.clamp(@ceil(fx0), 0, @as(f32, @floatFromInt(W))));
+    const x1: usize = @intFromFloat(std.math.clamp(@floor(fx1), 0, @as(f32, @floatFromInt(W))));
+    for (0..H) |y| {
+        const row = buf[y * STRIDE ..][0..W];
+        if (x0 > 0) @memset(row[0..x0], 0xFF);
+        if (x1 < W) @memset(row[x1..W], 0xFF);
+    }
+}
+fn halfLabel() []const u8 {
+    const g = visibleGeometry() orelse return "";
+    if (!splitActive() or g.steps != 2) return "";
+    return if (g.actual_step == 0) " L" else " R";
+}
+fn splitActive() bool {
+    return book.is_pdf and pool.split and pool.view == .page;
+}
 fn viewGeometry(r: [4]f32, mode: ViewMode, base_width: bool, step: i32, px: f32, py: f32) ViewGeometry {
     const fw: f32 = @floatFromInt(W);
     const fh: f32 = @floatFromInt(H);
@@ -1167,7 +1273,7 @@ fn zoomCycle(x: i32, y: i32) void {
     setView(next, .{ x, y });
 }
 fn turnView(direction: i32, t: u64) void {
-    if (book.is_pdf and pool.view == .width) {
+    if (book.is_pdf and (pool.view == .width or splitActive())) {
         const g = visibleGeometry() orelse return;
         const step = g.actual_step + direction;
         if (step >= 0 and step < g.steps) {
@@ -1188,7 +1294,7 @@ fn turnView(direction: i32, t: u64) void {
         }
     }
     goPage(pool.cur + direction, t);
-    if (book.is_pdf and pool.view == .width and direction < 0) {
+    if (book.is_pdf and (pool.view == .width or splitActive()) and direction < 0) {
         _ = pthread_mutex_lock(&pool.mtx);
         pool.step = -1;
         _ = pthread_cond_broadcast(&pool.cond);
@@ -1288,10 +1394,11 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
         if (!have_trim) {
             rc = if (use_trim) zr_ink_bbox_flags(doc, job.p, &r, ni, imageFlags()) else zr_page_bounds(doc, job.p, &r);
         }
-        const geometry = viewGeometry(r, mode, base_width, job.step, pan_x, pan_y);
+        const geometry = viewGeometryP(doc, job.p, wi, r, mode, base_width, job.step, pan_x, pan_y);
         const m = geometry.m;
         var render_stats: ZrRenderStats = .{};
         if (rc == 0) rc = zr_render_with_stats(doc, job.p, &m, slot.buf.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), ni, imageFlags(), &render_stats);
+        if (rc == 0) clipHalf(slot.buf, geometry);
         const metrics = pageMetrics(slot.buf, W, H, STRIDE, render_stats.image_coverage);
         const dt = nowUs() - t0;
 
@@ -1383,7 +1490,7 @@ fn notesBase(out: []u8) []const u8 {
     return std.fmt.bufPrint(out, "{s}/notes/{s}", .{ opts.data, clean[0..n.len] }) catch "";
 }
 
-const State = struct { anchor: Anchor = .{}, typography: bool = true, spacing: f32 = 1.4, view: ViewMode = .page, base_width: bool = false, step: i32 = 0, pan_x: f32 = 0, pan_y: f32 = 0, page: i32 = 0, font: f32 = 10.5, margin: f32 = 18, trim: bool = true, opened: i64 = 0, pages: i32 = 0 };
+const State = struct { anchor: Anchor = .{}, typography: bool = true, spacing: f32 = 1.4, view: ViewMode = .page, base_width: bool = false, step: i32 = 0, pan_x: f32 = 0, pan_y: f32 = 0, page: i32 = 0, font: f32 = 10.5, margin: f32 = 18, trim: bool = true, split: bool = true, opened: i64 = 0, pages: i32 = 0 };
 fn readAnchor(data: []const u8) Anchor {
     var a: Anchor = .{};
     if ((jsonNum(data, "anchor_version") orelse 0) != 1) return a;
@@ -1443,6 +1550,7 @@ fn loadState(path: []const u8) State {
     } else if (!st.typography) st.font = 9;
     if (jsonNum(data, "margin")) |v| st.margin = std.math.clamp(@as(f32, @floatCast(v)), 0, 60);
     if (jsonNum(data, "trim")) |v| st.trim = v != 0;
+    if (jsonNum(data, "split")) |v| st.split = v != 0;
     if (jsonNum(data, "opened")) |v| st.opened = repairOpened(v);
     if (jsonNum(data, "pages")) |v| st.pages = @intFromFloat(v);
     return st;
@@ -1461,8 +1569,8 @@ fn saveState() void {
         writeAnchor(&b, book.position);
     }
     b.print("\"typography_version\":1,\"spacing\":{d:.2},", .{pool.spacing});
-    b.print("\"page\":{d},\"pages\":{d},\"opened\":{d},\"font\":{d:.2},\"margin\":{d:.1},\"trim\":{d}}}\n", .{
-        pool.cur, pool.npages, book.opened_ts, pool.font, pool.margin, @intFromBool(pool.trim),
+    b.print("\"page\":{d},\"pages\":{d},\"opened\":{d},\"font\":{d:.2},\"margin\":{d:.1},\"trim\":{d},\"split\":{d}}}\n", .{
+        pool.cur, pool.npages, book.opened_ts, pool.font, pool.margin, @intFromBool(pool.trim), @intFromBool(pool.split),
     });
     var pb: [1200]u8 = undefined;
     _ = writeFileAtomic(statePath(book.pathS(), &pb), b.slice());
@@ -1691,8 +1799,8 @@ fn pcName(path: []const u8, out: *[32]u8) [*:0]const u8 {
 }
 fn pcKey(page: i32, view: u8, step: i32, pan_x: f32, pan_y: f32, base_width: bool, trim: bool, font: f32, margin: f32, spacing: f32, a: Anchor) u64 {
     var b: [512]u8 = undefined;
-    const k = std.fmt.bufPrint(&b, "zrpg1|{s}|{d}|{d}|{d}x{d}|d{d}|c{d}|i{d}|p{d}|v{d}|s{d}|x{d:.9}|y{d:.9}|b{d}|t{d}|f{d:.2}|m{d:.1}|l{d:.2}|a{d}:{d}:{d}:{x}", .{
-        book.pathS(), book.fsize, book.fmtime, W, H, @intFromBool(opts.image_dither), @intFromBool(opts.clean_scans), @intFromBool(opts.no_images), page, view, step, pan_x, pan_y, @intFromBool(base_width), @intFromBool(trim), font, margin, spacing, a.chapter, a.start, a.end, a.hash,
+    const k = std.fmt.bufPrint(&b, "zrpg1|{s}|{d}|{d}|{d}x{d}|d{d}|c{d}|i{d}|p{d}|v{d}|s{d}|x{d:.9}|y{d:.9}|b{d}|t{d}|f{d:.2}|m{d:.1}|l{d:.2}|a{d}:{d}:{d}:{x}|sp{d}", .{
+        book.pathS(), book.fsize, book.fmtime, W, H, @intFromBool(opts.image_dither), @intFromBool(opts.clean_scans), @intFromBool(opts.no_images), page, view, step, pan_x, pan_y, @intFromBool(base_width), @intFromBool(trim), font, margin, spacing, a.chapter, a.start, a.end, a.hash, @intFromBool(pool.split),
     }) catch return 0;
     if (book.reflow and (text_mode != 0 or book_font != 0)) {
         var b2: [600]u8 = undefined;
@@ -1827,12 +1935,13 @@ fn renderDraftRaster(doc: *ZrDoc) bool {
     var r: [4]f32 = .{ 0, 0, 612, 792 };
     if (zr_page_bounds(doc, pool.cur, &r) != 0) return false;
     const slot = &pool.slots[0];
-    const geometry = viewGeometry(r, pool.view, pool.base_width, pool.step, pool.pan_x, pool.pan_y);
+    const geometry = viewGeometryP(doc, pool.cur, 3, r, pool.view, pool.base_width, pool.step, pool.pan_x, pool.pan_y);
     var hm = geometry.m;
     for (&hm) |*v| v.* *= 0.5;
     var rs: ZrRenderStats = .{};
     if (zr_render_with_stats(doc, pool.cur, &hm, draft_buf.ptr, @intCast(hw), @intCast(hh), @intCast(hw), 0, imageFlags() | 4, &rs) != 0 or rs.drafted == 0) return false;
     upscale2(draft_buf, hw, hh, slot.buf, W, H, STRIDE);
+    clipHalf(slot.buf, geometry);
     slot.geometry = geometry;
     slot.m = geometry.m;
     slot.page = pool.cur;
@@ -1920,13 +2029,14 @@ fn workerDraft(doc: *ZrDoc, job: Job, gen: u32) bool {
     defer alloc.free(half);
     var r: [4]f32 = .{ 0, 0, 612, 792 };
     if (zr_page_bounds(doc, job.p, &r) != 0) return false;
-    const geometry = viewGeometry(r, .page, false, 0, 0, 0);
+    const geometry = viewGeometryP(doc, job.p, 2, r, .page, false, job.step, 0, 0);
     var hm = geometry.m;
     for (&hm) |*v| v.* *= 0.5;
     var rs: ZrRenderStats = .{};
     if (zr_render_with_stats(doc, job.p, &hm, half.ptr, @intCast(hw), @intCast(hh), @intCast(hw), 0, imageFlags() | 4, &rs) != 0 or rs.drafted == 0) return false;
     const slot = &pool.slots[job.s];
     upscale2(half, hw, hh, slot.buf, W, H, STRIDE);
+    clipHalf(slot.buf, geometry);
     const metrics = pageMetrics(slot.buf, W, H, STRIDE, rs.image_coverage);
     _ = pthread_mutex_lock(&pool.mtx);
     defer _ = pthread_mutex_unlock(&pool.mtx);
@@ -1965,10 +2075,11 @@ fn renderFirstRaster(doc: *ZrDoc) void {
     const ni: c_int = @intFromBool(opts.no_images);
     const rc = if (pool.trim) zr_ink_bbox_flags(doc, pool.cur, &r, ni, imageFlags()) else zr_page_bounds(doc, pool.cur, &r);
     const slot = &pool.slots[0];
-    slot.geometry = viewGeometry(r, pool.view, pool.base_width, pool.step, pool.pan_x, pool.pan_y);
+    slot.geometry = viewGeometryP(doc, pool.cur, 3, r, pool.view, pool.base_width, pool.step, pool.pan_x, pool.pan_y);
     slot.m = slot.geometry.m;
     var rs: ZrRenderStats = .{};
     const rendered = rc == 0 and zr_render_with_stats(doc, pool.cur, &slot.m, slot.buf.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), ni, imageFlags(), &rs) == 0;
+    if (rendered) clipHalf(slot.buf, slot.geometry);
     slot.page = pool.cur; slot.step = pool.step; slot.gen = pool.gen;
     slot.state = if (rendered) .ready else .failed;
     slot.metrics = pageMetrics(slot.buf, W, H, STRIDE, rs.image_coverage);
@@ -2069,6 +2180,8 @@ fn openBook(path: []const u8) bool {
     pool.font = st.font;
     pool.margin = st.margin;
     pool.trim = book.is_pdf and st.trim;
+    pool.split = st.split;
+    resetSpreads();
     pool.view = if (book.is_pdf) st.view else .page;
     pool.base_width = st.base_width;
     pool.step = if (book.is_pdf) st.step else 0;
@@ -3315,7 +3428,7 @@ fn drawMenu() void {
     fill(.{ .x = 0, .y = p.y, .w = p.w, .h = 3 }, 0x00);
     const shown_page = if (slider_active) slider_page else pool.cur;
     var b1: [64]u8 = undefined;
-    const pg = if (pool.paginating) std.fmt.bufPrint(&b1, "Page {d} / counting pages...", .{shown_page + 1}) catch "" else std.fmt.bufPrint(&b1, "Page {d} of {d}", .{ shown_page + 1, pool.npages }) catch "";
+    const pg = if (pool.paginating) std.fmt.bufPrint(&b1, "Page {d} / counting pages...", .{shown_page + 1}) catch "" else std.fmt.bufPrint(&b1, "Page {d}{s} of {d}", .{ shown_page + 1, halfLabel(), pool.npages }) catch "";
     text(SANS, 36, 70, @floatFromInt(p.y + 80), pg, 0x00);
     var b2: [16]u8 = undefined;
     const pct = std.fmt.bufPrint(&b2, "{d}%", .{@divTrunc((shown_page + 1) * 100, @max(pool.npages, 1))}) catch "";
@@ -3339,6 +3452,7 @@ fn drawMenu() void {
         // columns 2-3 are free for future buttons.
         button(panelButton(1, 1), "Reset pan", false);
         button(panelButton(1, 2), if (bookmarkIndex(pool.cur) != null) "Unbookmark" else "Bookmark", bookmarkIndex(pool.cur) != null);
+        button(panelButton(1, 3), if (pool.split) "Split: on" else "Split: off", pool.split);
     }
     button(panelButton(2, 0), "Search", false);
     button(panelButton(2, 1), "Export all", false);
@@ -5398,6 +5512,20 @@ fn onReaderTap(x: i32, y: i32, t_ev: u64) void {
         if (panelButton(0, 2).contains(x, y)) {
             menu_open = false;
             return markFull(WF_GC16);
+        }
+        if (book.is_pdf and panelButton(1, 3).contains(x, y)) {
+            _ = pthread_mutex_lock(&pool.mtx);
+            pool.split = !pool.split;
+            pool.step = 0;
+            pool.gen +%= 1;
+            pool.shown = -1;
+            _ = pthread_cond_broadcast(&pool.cond);
+            _ = pthread_mutex_unlock(&pool.mtx);
+            book.words_page = -1;
+            book.state_dirty = true;
+            need_page = true;
+            toast("Split two-page scans: {s}", .{if (pool.split) "on" else "off"});
+            return markFull(WF_REAGL);
         }
         if (panelButton(0, 3).contains(x, y)) {
             if (book.is_pdf) {

@@ -32,6 +32,11 @@ _,la=lines(T/'text100-la.epub',2,0);assert any(l.endswith('no'+SHY) for l in la)
 print('PASS Latin patterns used for lang="la" (e.g. "no-stra")')
 _,l1=lines(T/'text100-en.epub',1,0);assert all(len(l.split())>1 for l in l1[1:6]),l1[:6]
 print('PASS justified lines keep one text line per visual line (selection/highlights unaffected)')
+# 0.11.1: the PDF menu gained one button ("Split: on/off", row 2, column 4); everything else
+# in the menu must stay identical.
+def menu_same(a,b,W=1272):
+ H=len(a)//W;bw=(W-140-72)//4;x0=70+3*(bw+24);diff=[i for i in range(len(a)) if a[i]!=b[i]]
+ return all(x0-4<=i%W<x0+bw+4 for i in diff)
 with tempfile.TemporaryDirectory(dir=T,prefix='text100-') as t:
  d=Path(t);books=d/'books';books.mkdir()
  shutil.copy(T/'text100-en.epub',books/'en.epub');shutil.copy(T/'fixture.epub',books/'fixture.epub');shutil.copy(T/'tall-view-fixture.pdf',books/'tall.pdf')
@@ -42,7 +47,7 @@ with tempfile.TemporaryDirectory(dir=T,prefix='text100-') as t:
  for pdf,bdir in [(BIG,BIG.parent),(books/'tall.pdf',books)]:
   e=d/f'ref-{pdf.stem}';run(REF,e,shot,pdf,bdir,ui(0,0));ref=[pgm(e/f'{s}.pgm') for s in ('a','b','menu')]
   for mm,ff in [(0,0),(2,2),(1,1)]:
-   e=d/f'new-{pdf.stem}-{mm}{ff}';run(HOST,e,shot,pdf,bdir,ui(mm,ff));assert [pgm(e/f'{s}.pgm') for s in ('a','b','menu')]==ref,(pdf,mm,ff)
+   e=d/f'new-{pdf.stem}-{mm}{ff}';run(HOST,e,shot,pdf,bdir,ui(mm,ff));got=[pgm(e/f'{s}.pgm') for s in ('a','b','menu')];assert got[:2]==ref[:2] and menu_same(got[2],ref[2]),(pdf,mm,ff)
  print('PASS PDF pages and PDF menu byte-identical to 0.9.9 under all text settings (2 PDFs x 3 settings x 3 shots)')
  # 2. EPUB with Align: original + Font: book == 0.9.9 page pixels
  for bk in ('fixture.epub','en.epub'):
