@@ -2,6 +2,10 @@
 
 Earlier versions were early prototypes and are not listed.
 
+## 0.11.5
+
+Smoother zoom. On two-page scans shown one page at a time, zooming in and panning now work on the half you are reading instead of the whole spread (the facing page never shows), and zooming out returns to the same half. Each new zoom or pan cancels any render still running for the previous view, so the latest one wins and the sharp page arrives sooner after quick gestures. The instant scaled preview from 0.11.2 and its non-flashing swap are kept. Normal page views, digital PDFs and EPUBs render exactly as before; Light and Dark both work.
+
 ## 0.11.4
 
 Delete book and Dark theme. Long-press a book in the library for **Delete book** (all formats): a confirm screen shows the title with **Cancel** first and **Delete book permanently** below; taps within a second of the screen appearing or of the previous tap are ignored, so double or fast taps never confirm and never exit. Before deleting, the book's highlights and notes are exported to `export/` (the notes file is kept); then only the book file is deleted, and only if it is a real file inside the books folder (symlinks and paths outside are refused). Its saved position, kept original in `originals/`, favourite and collection entries and last-book entry are removed, and the library redraws in place. A read-only or failed delete shows a message and changes nothing. **Theme: Light / Dark** in Settings (saved in `ui07.json`, default Light): Dark shows the library, menus and book pages inverted (black paper, white text; highlights, ribbons and selection stay visible) with one redraw when switching and no extra refreshes. Dark uses the e-ink panel's invert support, so it depends on the device honouring it. Light renders exactly as 0.11.3.

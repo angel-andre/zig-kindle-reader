@@ -1,4 +1,4 @@
-# Install or upgrade 0.11.4
+# Install or upgrade 0.11.5
 
 These are explicit manual instructions, not an automatic device installer. All writes are to the user storage partition. Start with PREREQUISITES and keep SSH recovery available.
 
@@ -9,7 +9,7 @@ From the repository root:
 ```sh
 sha256sum -c release/SHA256SUMS
 # macOS alternative: shasum -a 256 -c release/SHA256SUMS
-tar -tzf release/zr114.tgz
+tar -tzf release/zr115.tgz
 ```
 
 Expected runtime members: `out/zreader`, `zreader-run.sh`, `zreader-maintenance.sh`, `dictionary/`, `kual/zreader/`, `README`, `COPYING`. Install the **runtime**, never a source archive or development fixtures.
@@ -17,7 +17,7 @@ Expected runtime members: `out/zreader`, `zreader-run.sh`, `zreader-maintenance.
 The executable's expected SHA-256 is:
 
 ```text
-0f88d758cba0183900471dd05713025acaa51071e5b0f3e5ec7578d72da3462f
+dbbed2a1f9b11eb5403be1873ce608c0d7a9ff0e2f459c04ea2d014e959214c2
 ```
 
 ## 2. Close readers and back up
@@ -45,7 +45,7 @@ scp -O -i "$KINDLE_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -P 2222  root@"$K
 ## 3. Stage on user storage, not /tmp
 
 ```sh
-scp -O -i "$KINDLE_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -P 2222  release/zr114.tgz root@"$KINDLE_HOST":/mnt/us/zr114.tgz
+scp -O -i "$KINDLE_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -P 2222  release/zr115.tgz root@"$KINDLE_HOST":/mnt/us/zr115.tgz
 ssh -i "$KINDLE_KEY" -o IdentitiesOnly=yes -o BatchMode=yes -p 2222 root@"$KINDLE_HOST"
 ```
 
@@ -54,7 +54,7 @@ The remaining commands run **on the Kindle**. Use a new empty staging directory;
 ```sh
 mkdir /mnt/us/zreader-install-07
 cd /mnt/us/zreader-install-07
-tar -xzf /mnt/us/zr114.tgz
+tar -xzf /mnt/us/zr115.tgz
 mkdir -p /mnt/us/zreader/dictionary /mnt/us/extensions
 cp out/zreader /mnt/us/zreader/zreader
 cp zreader-run.sh zreader-maintenance.sh /mnt/us/zreader/
@@ -67,7 +67,7 @@ sync
 /mnt/us/zreader/zreader --version
 ```
 
-Expect `zreader 0.11.4`. (The older 0.9.4 binary printed `zreader 0.9.3`; for it, check the SHA-256 in release/README.md instead.) Upgrading from 0.9.6, 0.9.8, 0.9.9, 0.10.0, 0.10.1, 0.10.3, 0.10.4, 0.10.5, 0.10.6, 0.11.0, 0.11.1, 0.11.2 or 0.11.3 directly is fine. The Latin dictionary is optional: without `latin.zdict` Look up is English-only, exactly as before. Preserve existing `state/`, `notes/`, `export/`, `settings.json`, `ui07.json` and `last_book`. The runtime does not contain replacement copies of these user files. Make `/mnt/us/Books` if needed and copy your own DRM-free PDF, EPUB, MOBI, AZW3, TXT, CBZ or FB2 books there.
+Expect `zreader 0.11.5`. (The older 0.9.4 binary printed `zreader 0.9.3`; for it, check the SHA-256 in release/README.md instead.) Upgrading from 0.9.6, 0.9.8, 0.9.9, 0.10.0, 0.10.1, 0.10.3, 0.10.4, 0.10.5, 0.10.6, 0.11.0, 0.11.1, 0.11.2, 0.11.3 or 0.11.4 directly is fine. The Latin dictionary is optional: without `latin.zdict` Look up is English-only, exactly as before. Preserve existing `state/`, `notes/`, `export/`, `settings.json`, `ui07.json` and `last_book`. The runtime does not contain replacement copies of these user files. Make `/mnt/us/Books` if needed and copy your own DRM-free PDF, EPUB, MOBI, AZW3, TXT, CBZ or FB2 books there.
 
 ## 4. First launch
 

@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.11.4";
+const VERSION = "0.11.5";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 // v0.10.0 second book font (OFL, Latin subset) and compact Latin hyphenation patterns (MIT).
 const sans_bold = @embedFile("fonts/NotoSans-Bold-Latin.ttf");
@@ -1099,7 +1099,7 @@ fn fitMatrix(r: [4]f32) [6]f32 {
 const ViewMode = enum(u8) { page, width, zoom15, zoom2 };
 const VIEW_NAMES = [_][]const u8{ "Fit page", "Fit width", "Zoom 1.5x", "Zoom 2x" };
 const VIEW_OVERLAP: f32 = 96;
-const ViewGeometry = struct { m: [6]f32 = .{ 1, 0, 0, 1, 0, 0 }, r: [4]f32 = .{ 0, 0, 1, 1 }, steps: i32 = 1, actual_step: i32 = 0, max_x: f32 = 0, max_y: f32 = 0 };
+const ViewGeometry = struct { m: [6]f32 = .{ 1, 0, 0, 1, 0, 0 }, r: [4]f32 = .{ 0, 0, 1, 1 }, steps: i32 = 1, actual_step: i32 = 0, max_x: f32 = 0, max_y: f32 = 0, half: bool = false };
 fn viewUsesTrim(pdf: bool, trim: bool, mode: ViewMode, base_width: bool) bool {
     return pdf and (trim or mode == .width or (base_width and (mode == .zoom15 or mode == .zoom2)));
 }
@@ -1175,17 +1175,25 @@ fn spreadSplit(doc: *ZrDoc, p: i32, slot_i: usize) f32 {
     return spreads[i];
 }
 fn viewGeometryP(doc: *ZrDoc, p: i32, slot_i: usize, r: [4]f32, mode: ViewMode, base_width: bool, step: i32, px: f32, py: f32) ViewGeometry {
-    if (mode != .page or !book.is_pdf or !pool.split) return viewGeometry(r, mode, base_width, step, px, py);
+    // v0.11.5: zoom on a split spread zooms the current half only (half kept in step).
+    const zoom = mode == .zoom15 or mode == .zoom2;
+    if ((mode != .page and !zoom) or !book.is_pdf or !pool.split) return viewGeometry(r, mode, base_width, step, px, py);
     const xs = spreadSplit(doc, p, slot_i);
     if (xs <= r[0] + 1 or xs >= r[2] - 1) return viewGeometry(r, mode, base_width, step, px, py);
     const actual: i32 = if (step < 0) 1 else @min(step, 1);
     const half: [4]f32 = if (actual == 0) .{ r[0], r[1], xs, r[3] } else .{ xs, r[1], r[2], r[3] };
+    if (zoom) {
+        var g = viewGeometry(half, mode, base_width, 0, px, py);
+        g.half = true;
+        g.actual_step = actual;
+        return g;
+    }
     return .{ .m = fitMatrix(half), .r = half, .steps = 2, .actual_step = actual };
 }
 // The fitted half is narrower than the screen; paint the side strips white so the facing
 // page (beyond the split) never shows.
 fn clipHalf(buf: []u8, g: ViewGeometry) void {
-    if (g.steps != 2 or !splitActive()) return;
+    if (!g.half and (g.steps != 2 or !splitActive())) return;
     const fx0 = g.m[0] * g.r[0] + g.m[4];
     const fx1 = g.m[0] * g.r[2] + g.m[4];
     const x0: usize = @intFromFloat(std.math.clamp(@ceil(fx0), 0, @as(f32, @floatFromInt(W))));
@@ -1230,6 +1238,11 @@ fn visibleGeometry() ?ViewGeometry {
 }
 fn invalidateView() void {
     pool.gen +%= 1;
+    // v0.11.5: renders for the previous view are stale; abort them (latest wins).
+    for (pool.job_p, 0..) |jp, i| if (jp >= 0 and !pool.preempted[i]) if (pool.docs[i]) |d| {
+        pool.preempted[i] = true;
+        zr_cancel(d);
+    };
     pool.shown = -1;
     book.words_page = -1;
     book.state_dirty = true;
@@ -1292,10 +1305,14 @@ fn setView(mode: ViewMode, anchor: ?[2]i32) void {
     const old_shown = pool.shown;
     const point = if (anchor) |p| toPage(p[0], p[1]) else [2]f32{ 0, 0 };
     _ = pthread_mutex_lock(&pool.mtx);
+    // v0.11.5: entering zoom from a split half keeps that half (in step); leaving zoom
+    // returns to the same half.
+    const zoom_to = mode == .zoom15 or mode == .zoom2;
+    const keep_half: ?i32 = if (geometry) |g| (if (zoom_to and (g.half or (g.steps == 2 and splitActive()))) g.actual_step else if (mode == .page and g.half) g.actual_step else null) else null;
     if (pool.view == .page or pool.view == .width) pool.base_width = pool.view == .width;
     if (mode == .page or mode == .width) pool.base_width = mode == .width;
     pool.view = mode;
-    pool.step = 0;
+    pool.step = keep_half orelse 0;
     pool.pan_x = 0;
     pool.pan_y = 0;
     if (anchor != null and geometry != null and mode == .width) {
