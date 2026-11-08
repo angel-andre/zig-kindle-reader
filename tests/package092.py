@@ -25,7 +25,7 @@ for p in (R/'tests').iterdir():
  if p.is_file() and p.name not in ['package081-results.txt','package082-results.txt','package090-results.txt','package091-results.txt','package092-results.txt'] and (p.suffix in ['.c','.py','.sh','.sim','.epub'] or p.name in ['tall-view-fixture.pdf','image-clip-fixture.pdf','REPORT06','REPORT08','REPORT081'] or p.name.endswith('08-results.txt') or p.name.startswith(('lib081','exit082','pc090','up091','scan092')) or p.name in ['run081-results.txt','run082-results.txt','run090-results.txt','run091-results.txt','run092-results.txt','reopen090-results.txt','REPORT081'] or p.name.endswith('08-regression.txt') or p.name in ['results08.txt','integration08-results.txt','refresh08-results.txt']):
   source['zigreader/tests/'+p.name]=p
 for p in (R/'shots').glob('*.png'):
- if p.name.startswith(('86_library_storage_battery_mock','89_scan_turn_log','90_library_book_count_mock','91_library_folder_count_mock')): source['zigreader/shots/'+p.name]=p
+ if p.name.startswith(('86_library_storage_battery_mock','89_scan-d_turn_log','90_library_book_count_mock','91_library_folder_count_mock')): source['zigreader/shots/'+p.name]=p
 for name in ['performance08.json','scan-d08-before.csv','scan-d08-after.csv','turn08-before.log','turn08-after.log','unit08-results.txt','v08-results.txt','cache08-results.txt','platform08-regression.txt','ui08-regression.txt','refresh08-results.txt']:
  source['zigreader/tests/'+name]=R/'tests'/name
 source['zigreader/third_party/mupdf-1.28.6-source.tar.gz']=R.parent/'mupdf-1.28.6-source.tar.gz'

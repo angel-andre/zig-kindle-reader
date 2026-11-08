@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory(prefix='latin103-',dir=T) as tmp:
  assert not bad,(bad,out)
  assert 'perf. act. ind. 3rd sg.' in out and 'gen. pl.' in out and '-que = and' in out
  print('PASS lemmatisation:',', '.join(f'{w}->{l}' for w,l in cases.items()))
- # Latin quoted in Author C, scan-C (Ad Herennium III, Cicero, Quintilian ...)
+ # Latin quoted in Frances Author C, scan-C (Ad Herennium III, Cicero, Quintilian ...)
  aom='''Constat igitur artificiosa memoria ex locis et imaginibus
  locis est utendum multis illustribus explicatis modicis intervallis
  imaginibus autem agentibus acribus insignitis quae occurrere celeriterque percutere animum possint

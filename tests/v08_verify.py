@@ -5,7 +5,7 @@ R=Path(__file__).resolve().parent.parent
 with tempfile.TemporaryDirectory(dir=R/'tests',prefix='v08-ui-') as t:
  d=Path(t);data=d/'data';data.mkdir();(d/'empty').mkdir()
  (data/'settings.json').write_text('{"full_refresh":8}')
- script=d/'turn.sim';script.write_text('wait 1800\n'+('tap 1200 850\nwait 400\n'*15)+'shot 87_scan_reader_battery\nquit\n')
+ script=d/'turn.sim';script.write_text('wait 1800\n'+('tap 1200 850\nwait 400\n'*15)+'shot 87_scan-d_reader_battery\nquit\n')
  p=subprocess.run([str(R/'out/zreader-host'),'--data',str(data),'--books',str(d/'empty'),'--sim',str(script),'--shots',str(R/'shots'),'--idle-min','0',str(R.parent/'diag/scan-d.pdf')],capture_output=True,timeout=30,check=True)
  log=p.stderr.decode();(R/'tests/turn08-after.log').write_text(log)
  modes=re.findall(r'page refresh: p=(\d+) reason=(\w+) wf=(\d+)',log)
@@ -35,7 +35,7 @@ assert all(x['reason']=='text' and x['waveform']=='4' for x in rows[2:178])
 assert all(x['waveform']=='4' for x in rows[195:])
 assert rows[178]['reason']=='image' and float(rows[178]['photo'])>.5
 print('PASS 372-page audit: 353 REAGL, 19 cleans limited to opening, cover departure and photo insert transitions')
-for name in ['86_library_storage_battery_mock','87_scan_reader_battery']:
+for name in ['86_library_storage_battery_mock','87_scan-d_reader_battery']:
  p=R/'shots'/f'{name}.pgm';im=Image.open(p);im.save(p.with_suffix('.png'));ImageOps.invert(im.convert('RGB')).save(p.with_name(name+'_dark.png'))
 # Legible turn-log preview, generated from measured production pump logs.
 font=ImageFont.truetype('/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf',21)
@@ -44,5 +44,5 @@ lines=['ZIGG READER 0.8 / SCAN-D','Measured host simulator: 15 turns, 16 submiss
 for page in range(1,17):lines.append(f'{page:>4}   GC16 FULL          '+('GC16 FULL' if page<=2 else 'REAGL (no flash)')+(' '*4)+'1 -> 1')
 lines+=['','p1 opening / p2 clears the cover; p3-16 ordinary scans.','All 372 pages: 372 -> 19 GC16; 353 REAGL.','Remaining cleans are covers and the real photo insert.','No progressive/double page updates; periodic default OFF.']
 for i,line in enumerate(lines):draw.text((44,35+i*34),line,font=font,fill='#e5e9ef' if i!=0 else '#a9d9e8')
-im.save(R/'shots/89_scan_turn_log.png')
+im.save(R/'shots/89_scan-d_turn_log.png')
 print('PASS storage/type/size + battery preview and scan-D turn-log PNGs written')

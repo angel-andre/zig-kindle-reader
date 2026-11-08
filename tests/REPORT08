@@ -87,9 +87,9 @@ rectangle in a raw-render reference comparison. Source/privacy checks pass.
 PREVIEWS (host simulation, not photographs of the device)
 shots/86_library_storage_battery_mock_dark.png — illustrative library data,
   storage and 76% battery; values are fixture inputs, not live device readings.
-shots/87_scan_reader_battery_dark.png — actual scan-D raster plus mocked
+shots/87_scan-d_reader_battery_dark.png — actual scan-D raster plus mocked
   battery, inverted only for preview of inherited hardware dark mode.
-shots/89_scan_turn_log.png — measured per-turn before/after modes/counts.
+shots/89_scan-d_turn_log.png — measured per-turn before/after modes/counts.
 Do not add private-book raster screenshots to a shared repository. The source
 package includes only the illustrative library and turn-log previews.
 
