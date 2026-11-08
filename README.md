@@ -43,15 +43,56 @@ A weekend project. The stock Kindle software handles PDFs and scanned books poor
 
 **E-ink behaviour** — no periodic full refreshes; non-flashing updates for text, a clean refresh only where heavy images need it; fast or repeated taps never exit the app.
 
-## Quick start
+## Install
 
-Requirements: a **jailbroken** Kindle with **KUAL**; SSH (key-only) is optional but recommended for recovery. Details: [prerequisites](docs/PREREQUISITES.md).
+**Requirements:** a **jailbroken** Kindle with **KUAL** installed. Tested only on the **Kindle Paperwhite 12th gen**; other models are untested. SSH (key-only) is optional but useful for recovery.
 
-1. Download `release/zr115.tgz` and check it against [`release/SHA256SUMS`](release/SHA256SUMS).
-2. Follow [Install or upgrade](docs/INSTALL.md) (copy, extract to `/mnt/us`, start "Zig reader" from KUAL).
-3. Put DRM-free books in `/mnt/us/Books` (sub-folders are fine), or upload them over Wi-Fi from Settings.
+Download [`release/zr115.tgz`](release/zr115.tgz) and check it on your computer. Its SHA-256 must match the `release/zr115.tgz` line in [`release/SHA256SUMS`](release/SHA256SUMS):
 
-More: [user guide](docs/USER_GUIDE.md) · [uninstall and rollback](docs/UNINSTALL.md) (the previous release, `release/zr114.tgz`, is kept for rollback; see [release/README.md](release/README.md)) · [troubleshooting](docs/TROUBLESHOOTING.md) · [safe cleanup](docs/DEBLOAT.md)
+```sh
+sha256sum zr115.tgz      # macOS: shasum -a 256 zr115.tgz
+# expected: 269178b9e270a6d6bbe39b8ec89a759f9dbecc9b116ac0c14cb6f127164031ff
+mkdir zr115 && tar -xzf zr115.tgz -C zr115
+```
+
+(From a full clone you can instead run `sha256sum -c release/SHA256SUMS` in the repository root.)
+
+Both routes put the files in the same places on the Kindle:
+
+| In the archive | On the Kindle (USB drive) | On the Kindle (SSH path) |
+|---|---|---|
+| `out/zreader` (rename to `zreader`) | `zreader/zreader` | `/mnt/us/zreader/zreader` |
+| `zreader-run.sh`, `zreader-maintenance.sh`, `README`, `COPYING` | `zreader/` | `/mnt/us/zreader/` |
+| `dictionary/` (all files) | `zreader/dictionary/` | `/mnt/us/zreader/dictionary/` |
+| `kual/zreader/` (the whole folder) | `extensions/zreader/` | `/mnt/us/extensions/zreader/` |
+
+### A. USB drag-and-drop
+
+1. Connect the Kindle by USB; it appears as a drive (its root is `/mnt/us` on the device).
+2. Create a `zreader` folder at the drive root and copy into it: `out/zreader` (it must end up as `zreader/zreader`, not `zreader/out/zreader`), `zreader-run.sh`, `zreader-maintenance.sh`, `README`, `COPYING` and the `dictionary` folder.
+3. Copy the `kual/zreader` folder into the existing `extensions` folder, so you get `extensions/zreader/menu.json`. Folders merge; don't replace `extensions`.
+4. Put DRM-free books in a `Books` folder at the drive root (sub-folders are fine).
+5. Eject the Kindle safely, unplug it, then open **KUAL → Zig reader → Zig reader (Library)**.
+
+No `chmod` is needed. The Kindle's USB storage is FAT, so files can't carry permission bits, but the device mounts it with every file executable (this is how KOReader is installed too). The KUAL entry starts the launcher with `/bin/sh`, and the launcher runs `/mnt/us/zreader/zreader`.
+
+### B. SSH
+
+Copy `zr115.tgz` to `/mnt/us`, unpack it into an empty staging folder and copy the files to the paths in the table. The full step-by-step commands, including a backup first, are in [Install or upgrade](docs/INSTALL.md). Check with `/mnt/us/zreader/zreader --version` (expect `zreader 0.11.5`).
+
+### Update
+
+Quit the reader, then copy the new `zreader`, scripts, `dictionary/` and `extensions/zreader/` over the old ones by either route. Your notes and reading state live in other files and aren't overwritten.
+
+### Where your data lives
+
+Everything is in `/mnt/us/zreader/` (the `zreader` folder on the USB drive): `state/` (reading positions), `notes/` (highlights and notes), `export/` (exported notes), `settings.json`, `ui07.json`, `last_book` and `cache/` (saved page images, safe to delete). Logs are `/mnt/us/zreader.log` and `/mnt/us/zreader-stderr.log`. Books stay in `/mnt/us/Books`.
+
+### Uninstall
+
+Quit the reader, copy `zreader/state`, `zreader/notes` and `zreader/export` to your computer if you want to keep them, then delete the `zreader` folder and `extensions/zreader` (over USB or SSH). Your books, KUAL and the Kindle system are untouched. Details and rollback to the previous release (`release/zr114.tgz`): [uninstall and rollback](docs/UNINSTALL.md).
+
+More: [user guide](docs/USER_GUIDE.md) · [prerequisites](docs/PREREQUISITES.md) · [release notes](release/README.md) · [troubleshooting](docs/TROUBLESHOOTING.md) · [safe cleanup](docs/DEBLOAT.md)
 
 Developers: [build from source](docs/BUILD.md) · [tests](docs/TESTING.md) · [architecture](docs/ARCHITECTURE.md) · [benchmark details](docs/BENCHMARK.md) · [roadmap](docs/ROADMAP.md)
 
