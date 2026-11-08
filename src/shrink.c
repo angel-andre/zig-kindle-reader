@@ -44,8 +44,8 @@ int zr_shrink_pdf(const char *in, const char *out, int quality)
 		dpi = 72.0f * s * 1.25f;
 		if (dpi < 96) dpi = 96;
 		memset(&o, 0, sizeof o);
-		o.color_lossless_image_subsample_method = o.color_lossy_image_subsample_method = FZ_SUBSAMPLE_AVERAGE;
-		o.gray_lossless_image_subsample_method = o.gray_lossy_image_subsample_method = FZ_SUBSAMPLE_AVERAGE;
+		o.color_lossless_image_subsample_method = o.color_lossy_image_subsample_method = FZ_SUBSAMPLE_BICUBIC; /* exact target size; AVERAGE only halves */
+		o.gray_lossless_image_subsample_method = o.gray_lossy_image_subsample_method = FZ_SUBSAMPLE_BICUBIC;
 		o.color_lossless_image_subsample_threshold = o.color_lossy_image_subsample_threshold = (int)(dpi * 1.2f);
 		o.gray_lossless_image_subsample_threshold = o.gray_lossy_image_subsample_threshold = (int)(dpi * 1.2f);
 		o.color_lossless_image_subsample_to = o.color_lossy_image_subsample_to = (int)dpi;

@@ -411,6 +411,62 @@ int zr_draft_wanted(zr_doc *z, int page, int flags, int w, int h)
 	return want;
 }
 /* flags bit1 (clean scans): MRC scan pages take the bounding box of their 1-bit text mask, without decoding the JPEG 2000 layers. */
+
+/* v0.11.3: margins of a real scan. Gated on the page having almost no pure
+ * white (digital pages are mostly exact 255, so they keep the old path and stay
+ * byte-identical). Dark page-edge bands are skipped, then content is the first
+ * run of 3 rows/columns with real ink (>=1% dark), so specks are ignored. */
+static int scan_edges(const int *cnt, int n, int len, int *a, int *b)
+{
+	int lo = 0, hi = n - 1, need = len / 100 > 2 ? len / 100 : 2;
+	while (lo < n / 4 && cnt[lo] * 10 > len * 4) lo++;
+	while (hi > n * 3 / 4 && cnt[hi] * 10 > len * 4) hi--;
+	int i = lo, j = hi;
+	while (i + 2 <= hi && !(cnt[i] >= need && cnt[i+1] >= need && cnt[i+2] >= need)) i++;
+	while (j - 2 >= lo && !(cnt[j] >= need && cnt[j-1] >= need && cnt[j-2] >= need)) j--;
+	if (j - i < n / 8) return 0;
+	*a = i; *b = j; return 1;
+}
+static int scan_bbox(const unsigned char *px, int stride, int w, int h, int *x0, int *y0, int *x1, int *y1)
+{
+	if (w < 64 || h < 64) return 0;
+	size_t white = 0, tot = (size_t)w * h;
+	for (int y = 0; y < h; y++) { const unsigned char *row = px + (size_t)y * stride; for (int x = 0; x < w; x++) white += row[x] == 255; }
+	if (white * 10 > tot * 3) return 0;
+	int *cx = calloc((size_t)w, sizeof(int)), *cy = calloc((size_t)h, sizeof(int));
+	if (!cx || !cy) { free(cx); free(cy); return 0; }
+	unsigned hist[256] = {0};
+	for (int y = 0; y < h; y += 2) { const unsigned char *row = px + (size_t)y * stride; for (int x = 0; x < w; x += 2) hist[row[x]]++; }
+	int mode = 0; for (int v = 1; v < 256; v++) if (hist[v] > hist[mode]) mode = v;
+	int thr = mode - 70; if (thr < 40) { free(cx); free(cy); return 0; }
+	for (int y = 0; y < h; y++) { const unsigned char *row = px + (size_t)y * stride; for (int x = 0; x < w; x++) if (row[x] < thr) { cx[x]++; cy[y]++; } }
+	int ok = scan_edges(cx, w, h, x0, x1) && scan_edges(cy, h, w, y0, y1);
+	free(cx); free(cy);
+	return ok;
+}
+
+/* v0.11.3: scan trim applies only to real scans: an image covering >= 85% of
+ * the page and no vector paths or shadings (invisible OCR text is allowed). */
+typedef struct { fz_device super; fz_rect page; int big, vec; } zr_scanq_dev;
+static void sq_path(fz_context *c, fz_device *d, const fz_path *p, int eo, fz_matrix m, fz_colorspace *cs, const float *col, float a, fz_color_params cp){ ((zr_scanq_dev*)d)->vec=1; }
+static void sq_spath(fz_context *c, fz_device *d, const fz_path *p, const fz_stroke_state *st, fz_matrix m, fz_colorspace *cs, const float *col, float a, fz_color_params cp){ ((zr_scanq_dev*)d)->vec=1; }
+static void sq_shade(fz_context *c, fz_device *d, fz_shade *sh, fz_matrix m, float a, fz_color_params cp){ ((zr_scanq_dev*)d)->vec=1; }
+static void sq_image(fz_context *c, fz_device *d, fz_image *img, fz_matrix m, float a, fz_color_params cp)
+{
+	zr_scanq_dev *q=(zr_scanq_dev*)d;
+	fz_rect r=fz_intersect_rect(fz_transform_rect(fz_unit_rect,m),q->page);
+	double pa=(double)(q->page.x1-q->page.x0)*(q->page.y1-q->page.y0);
+	if (!fz_is_empty_rect(r) && pa > 0 && (double)(r.x1-r.x0)*(r.y1-r.y0) >= 0.85*pa) q->big=1;
+}
+static int page_is_scan(fz_context *ctx, fz_display_list *l, fz_rect page)
+{
+	zr_scanq_dev *q=fz_new_derived_device(ctx,zr_scanq_dev); int ok=0;
+	q->page=page; q->super.fill_path=sq_path; q->super.stroke_path=sq_spath; q->super.fill_shade=sq_shade; q->super.fill_image=sq_image;
+	fz_try(ctx) { fz_run_display_list(ctx,l,&q->super,fz_identity,fz_infinite_rect,NULL); fz_close_device(ctx,&q->super); ok=q->big && !q->vec; }
+	fz_always(ctx) fz_drop_device(ctx,&q->super);
+	fz_catch(ctx) ok=0;
+	return ok;
+}
 int zr_ink_bbox_flags(zr_doc *z, int page, float *r, int no_images, int flags)
 {
 	fz_context *ctx = z->ctx;
@@ -447,6 +503,7 @@ int zr_ink_bbox_flags(zr_doc *z, int page, float *r, int no_images, int flags)
 		if (drafts) fz_close_device(ctx, &drafts->super);
 		fz_close_device(ctx, dev);
 		int w = pix->w, h = pix->h, x0 = w, y0 = h, x1 = -1, y1 = -1;
+		if (!no_images && page_is_scan(ctx, l, bounds) && scan_bbox(pix->samples, pix->stride, w, h, &x0, &y0, &x1, &y1)) h = 0;
 		for (int y = 0; y < h; y++) {
 			const unsigned char *row = pix->samples + (size_t)y * pix->stride;
 			for (int x = 0; x < w; x++) {
@@ -594,6 +651,25 @@ static int scan_cleanup(unsigned char *out, int stride, fz_irect r, const unsign
             row[r.x0+x]=lut[t];
         }
     }
+    /* v0.11.3 gentle sharpen (amount 3/8, 4-neighbour), text edges only:
+     * skipped where the local contrast is photo-like mid-grey (all 5 between 40 and 215). */
+    unsigned char *prev=malloc((size_t)rw), *cur=malloc((size_t)rw);
+    if (prev && cur && rh > 2 && !getenv("ZR_NOSHARP")) {
+        memcpy(prev, out+(size_t)r.y0*stride+r.x0, (size_t)rw);
+        for (int y=r.y0+1; y<r.y1-1; y++) {
+            unsigned char *row=out+(size_t)y*stride+r.x0; const unsigned char *nx=row+stride;
+            memcpy(cur,row,(size_t)rw);
+            const unsigned char *bf = before+(size_t)(y-r.y0)*rw;
+            for (int x=1; x<rw-1; x++) {
+                int v=cur[x]; if (v==bf[x]) continue;
+                int a=prev[x], b=nx[x], c=cur[x-1], e=cur[x+1];
+                if (v>40&&v<215&&a>40&&a<215&&b>40&&b<215&&c>40&&c<215&&e>40&&e<215) continue;
+                int o=v+(4*v-a-b-c-e)*3/32; row[x]=(unsigned char)(o<0?0:o>255?255:o);
+            }
+            unsigned char *t=prev; prev=cur; cur=t;
+        }
+    }
+    free(prev); free(cur);
     free(bg); free(gx0); free(wx);
     return 1;
 }

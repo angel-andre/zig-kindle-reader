@@ -2,6 +2,10 @@
 
 Earlier versions were early prototypes and are not listed.
 
+## 0.11.3
+
+Better scanned books. **Shrink for Kindle** now really reduces oversized scan images to the target resolution (before, images less than twice the target were left at full size); re-shrink books shrunk with 0.11.0 to 0.11.2 to benefit: a 300 dpi scan becomes about half the size and its pages render roughly twice as fast. **Trim** now finds the text area on real scans (a page that is one big image with no vector drawing), ignoring dark page-edge bands and specks; digital pages trim exactly as before. **Clean up scanned pages** adds a gentle sharpen on text edges, skipping photo-like areas. Digital PDFs and EPUBs render exactly as before.
+
 ## 0.11.2
 
 Instant zoom and pan. Zooming in or panning on a PDF now shows an immediate scaled copy of the current screen (a few milliseconds) while the sharp page renders, then replaces it in place; the final page is identical to 0.11.1. Renders slower than 150 ms are logged as `slow render` lines with page, step, view and time, to help find slow books. Digital PDFs and EPUBs render exactly as before.
