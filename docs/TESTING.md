@@ -15,7 +15,7 @@ The 175 MiB synthetic sparse PDF tests large offsets, **not** real 175 MiB scann
 
 ## Prerequisites and commands
 
-Build the target and host libraries and executables using BUILD. Some regression tests use real books: place your own PDF copies in `testbooks/` (for example `testbooks/digital-small1.pdf`, and `digital-big.pdf` for the refresh audits). Those books are not distributed for copyright reasons. Generated sample files and their harnesses are included.
+Build the target and host libraries and executables using BUILD. Some regression tests use real books: place your own PDF copies in `testbooks/` (each test names the file it expects). Those books are not distributed for copyright reasons. Generated sample files and their harnesses are included.
 
 Original suite commands, from the repository root:
 
