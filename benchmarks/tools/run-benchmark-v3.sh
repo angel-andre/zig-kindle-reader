@@ -55,7 +55,7 @@ trial() {
 nohup sh /mnt/us/koreader/koreader.sh "$B/book.epub" >"$B/ko-epub-v3.log" 2>&1 </dev/null &
 sleep 12
 trial ko-epub 8 reader.lua
-# Fresh isolated EPUB state for the Zigg rerun, keeping original backups intact.
+# Fresh isolated EPUB state for the Zig Reader rerun, keeping original backups intact.
 rm -rf /mnt/us/zreader/state
 mkdir -p /mnt/us/zreader/state
 nohup sh /mnt/us/zreader/zreader-run.sh "$B/book.epub" >"$B/z-epub-rerun.log" 2>&1 </dev/null &

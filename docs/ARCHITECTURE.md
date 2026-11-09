@@ -2,6 +2,8 @@
 
 - `src/zreader.zig`: UI/input, library, state/annotations, cache scheduling and e-ink update policy. Two render workers, 14 raster-cache slots and directional prefetch keep cached page turns separate from background work.
 - `src/render.c`, `render.h`, `epub-anchor.inc`, `search.inc`: MuPDF rendering/text geometry, chapter anchors, search, image statistics/dithering.
+- `src/reflow.c`, `reflow.h`: scanned-page reflow (finds text lines and words in a page image, keeps pictures, lays the words out again at 1.5× or 2× for this screen; analysis cached per page). `src/reflowhook.c` connects it to MuPDF rendering and the reader; `src/reflow_host/rfhost.c` is a small host harness.
+- `src/shrink.c`: Shrink for Kindle (greyscale, downsampled copy of a PDF; mixed-raster and JPEG 2000 handling).
 - `src/dictionary.c`, `dictionary.h`: read-only bounds-checked WordNet index and lookup.
 - `src/platform07.c`: bounded LIPC commands, event subscription and isolated thumbnail rendering support.
 - `src/fonts/`: UI font and its SIL OFL licence. MuPDF supplies document-font support and bundled font licences.
@@ -10,8 +12,8 @@
 - `kual/zreader/`: menu and launch glue.
 - `dictionary/`: WordNet source archive, rebuild program, index, format and licence.
 - `tests/`: test reports, harnesses, results and generated sample files. No copyrighted books are included.
-- `shots/`: UI previews rendered from sample books.
-- `release/`: 0.8 and 0.7 runtimes plus checksums and size records.
+- `docs/img/`: README screenshots made with `--sim` from public-domain sample books. `shots/` is scratch output for `--sim` and unit tests (not tracked).
+- `release/`: the 0.12.3 runtime and the 0.11.5 rollback runtime, plus checksums and size records.
 
 The display path uses the PW6 MTK hwtcon interface. Normal REAGL turns and GC16 FULL cleans are explicit policy choices, not framebuffer mode changes. Hardware inversion remains inherited. Brightness/warmth use powerd LIPC; no raw backlight writes. The launcher reads/restores the existing CPU governor; it does not remove platform services from disk.
 

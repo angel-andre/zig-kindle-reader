@@ -1,0 +1,17 @@
+--- a/source/pdf/pdf-image-rewriter.c	2026-11-08 15:18:41.497196243 -0500
++++ b/source/pdf/pdf-image-rewriter.c	2026-11-08 15:18:41.509196129 -0500
+@@ -725,6 +725,14 @@
+ 		dpi = uilist->img[i].dpi;
+ 	}
+ 
++	/* zreader 0.12.3: a lossy image that will not be resampled is only re-encoded (grey, same
++	 * size); when it is already below 0.9 bits per pixel that is never smaller, so it is not
++	 * decoded at all (it was decoded for nothing before). */
++	if (zr_rw_gray && lossy && orig_len > 0 && (*image)->w > 0 && (*image)->h > 0 &&
++		dpi <= info->opts->color_lossy_image_subsample_threshold && dpi <= info->opts->gray_lossy_image_subsample_threshold &&
++		(double)orig_len * 8.0 < 0.9 * (double)(*image)->w * (double)(*image)->h)
++		return;
++
+ 	/* What sort of image is this? */
+ 	pix = fz_get_pixmap_from_image(ctx, *image, NULL, NULL, NULL, NULL);
+ 	type = classify_pixmap(ctx, pix);

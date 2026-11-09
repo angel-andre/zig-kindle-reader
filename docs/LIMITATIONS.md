@@ -8,8 +8,9 @@
 - EPUB anchor indexes are bounded; complex order/checksum failures stay unresolved rather than drawing a guessed highlight. Same-basename books retain legacy annotation/export collisions.
 - Large or complex covers deliberately time out or hit memory bounds and show placeholders. A synthetic sparse 175 MiB PDF is not equivalent to a 175 MiB scanned book.
 - Thumbnail refresh uses next-session path/size/mtime identity, not a live file watcher.
-- Hardware dark mode is preserved but not simulated in screenshots. GC16 policy checks do not prove absence of physical ghosting.
+- The Kindle's own dark mode is preserved; the screenshots show the reader's Dark theme from the simulator. GC16 policy checks do not prove absence of physical ghosting.
 - Malformed calibre PDF drop-cap overlap also occurs in independent MuPDF/Poppler renders. No layout repair was fabricated.
 - Whether firmware honours DISABLE_CORE_DUMP may vary. Removing old dumps does not prevent new crashes.
 - The KOReader benchmark covers one device and two books, and measures framebuffer change, not physical e-ink completion.
 - Some regression tests need your own book copies in `testbooks/`.
+- Reflow is for single-column scanned text; pages that are mostly pictures, or spreads, stay in page view, and some words can sit slightly off the line.

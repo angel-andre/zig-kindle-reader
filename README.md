@@ -1,30 +1,41 @@
-# Zigg Reader
+# Zig Reader
 
 **A fast, native e-reader for jailbroken Kindles, written in Zig with MuPDF.**
 
-Version **0.11.5** · tested on a Kindle Paperwhite 12th generation (1272×1696) · other Kindles untested · GNU AGPL v3
+Version **0.12.3** · tested on a Kindle Paperwhite 12th generation (1272×1696) · other Kindles untested · GNU AGPL v3
 
 | Library | Library (Dark) | Book menu |
 | --- | --- | --- |
-| ![Library](docs/img/library-light.png) | ![Library in Dark theme](docs/img/library-dark.png) | ![Long-press book menu](docs/img/library-book-menu.png) |
+| ![Library](docs/img/library-light.png) | ![Library in Dark theme](docs/img/library-dark.png) | ![Long-press book menu with Shrink for Kindle and Delete book](docs/img/library-book-menu.png) |
 
-| Reading (Dark) | Reader menu (EPUB) | Reader menu (PDF) |
+| Reader menu | View panel (EPUB) | More panel |
 | --- | --- | --- |
-| ![A page in Dark theme](docs/img/page-dark.png) | ![EPUB reader menu](docs/img/reader-menu.png) | ![PDF reader menu](docs/img/pdf-menu.png) |
+| ![Compact reader menu](docs/img/reader-menu.png) | ![View panel for a reflowable book](docs/img/reader-view.png) | ![More panel](docs/img/reader-more.png) |
 
-*Screens rendered by the reader's own simulator from the public-domain and generated test books in `tests/`; they don't show e-ink ghosting.*
+| View panel (scanned PDF) | Two-page scan, split | Reflow on a scanned page |
+| --- | --- | --- |
+| ![View panel for a scanned PDF with Trim, Split and Reflow](docs/img/pdf-menu.png) | ![Left half of a two-page scan](docs/img/split-page.png) | ![A scanned page reflowed at 2x](docs/img/reflow-page.png) |
+
+| Reading (Dark) | Shrink for Kindle |
+| --- | --- |
+| ![A page in Dark theme](docs/img/page-dark.png) | ![Shrink result](docs/img/shrink-result.png) |
+
+*I made these screens with the reader's own simulator (0.12.3), using the public-domain first chapters of Alice's Adventures in Wonderland (as EPUB, PDF and generated scans) and generated test files. They don't show e-ink ghosting.*
 
 ## Why
 
-A weekend project. The stock Kindle software handles PDFs and scanned books poorly, and KOReader, while very capable, felt slow on this device for my use (page turns and taps lagging). Zigg Reader is a small native program focused on fast page turns, good handling of large and scanned PDFs, and an e-ink-friendly interface. It is not firmware: it pauses the stock interface while it runs and restores it on exit.
+A weekend project. The stock Kindle software handles PDFs and scanned books poorly, and KOReader, while very capable, felt slow on this device for my use (page turns and taps lagging). Zig Reader is a small native program focused on fast page turns, good handling of large and scanned PDFs, and an e-ink-friendly interface. It is not firmware: it pauses the stock interface while it runs and restores it on exit.
 
 ## Features
 
 **Formats** — PDF, EPUB, MOBI, AZW3 (KF8), TXT, CBZ and FB2 (DRM-free).
 
+**Compact in-book menu** — tap the centre for one row: Contents, Bookmark, Notes, Search, View and More. **View** holds the display settings for the current book (text size, margins, spacing, font and alignment for reflowable books; fit and zoom, Trim, Split and Reflow for PDFs); **More** holds Bookmarks, Export all, Settings and the full-refresh setting.
+
 **PDF and scanned books**
-- **Shrink for Kindle**: long-press a PDF to make a smaller greyscale copy sized for this screen; text, links, page count and notes keep working; the original is kept in `originals/` until you delete it.
-- **Two-page scans split** into single pages automatically (gutter detection, facing page never shows), per-book toggle.
+- **Reflow for scanned pages**: View → Reflow (1.5× or 2×) re-flows the words of a scanned page into larger text that fills the screen; tap through its screens, then on to the next page. Pages it can't reflow safely (mostly pictures, or spreads) stay in page view. Offered only for scanned PDFs, remembered per book.
+- **Shrink for Kindle**: long-press a PDF to make a smaller greyscale copy sized for this screen; text, links, page count and notes keep working; the original is kept in `originals/` until you delete it. 0.12 also shrinks "mixed raster" scans and is faster on JPEG 2000 scans; a watchdog stops a run that makes no progress.
+- **Two-page scans split** into single pages automatically (gutter detection, facing page never shows), per-book toggle (View → Split).
 - **Scan cleanup**: whiter paper, darker text, gentle sharpening; **auto-trim** of margins on real scans (digital pages are untouched).
 - Fit page, fit width, 1.5× and 2× zoom with pan; an instant scaled preview while the sharp page renders, and zoom stays on the current half of a split spread.
 - Instant first page on heavy scans (draft first, exact page swapped in without a flash); nearby pages pre-rendered by background workers.
@@ -34,7 +45,7 @@ A weekend project. The stock Kindle software handles PDFs and scanned books poor
 - Offline dictionaries: English (WordNet 3.0) and Latin (Whitaker's WORDS, with inflected forms).
 - Contents (table of contents), in-book search, go to page, reading progress.
 - Typography for reflowed books: size, margins, line spacing, Justify with hyphenation (English and Latin patterns), Charis SIL / Noto Sans / book font.
-- **Theme: Light / Dark** (Dark uses the panel's inversion).
+- **Theme: Light / Dark** in Settings (Dark uses the panel's inversion).
 
 **Library**
 - Covers, folders, collections and favourites; sort by recent, title, progress or size; progress bars; book count, storage and battery.
@@ -47,12 +58,12 @@ A weekend project. The stock Kindle software handles PDFs and scanned books poor
 
 **Requirements:** a **jailbroken** Kindle with **KUAL** installed. Tested only on the **Kindle Paperwhite 12th gen**; other models are untested. SSH (key-only) is optional but useful for recovery.
 
-Download [`release/zr115.tgz`](release/zr115.tgz) and check it on your computer. Its SHA-256 must match the `release/zr115.tgz` line in [`release/SHA256SUMS`](release/SHA256SUMS):
+Download `zr123.tgz` from the [v0.12.3 release](https://github.com/angel-andre/zig-kindle-reader/releases/tag/v0.12.3) (the same file is in [`release/zr123.tgz`](release/zr123.tgz)) and check it on your computer. Its SHA-256 must match the `release/zr123.tgz` line in [`release/SHA256SUMS`](release/SHA256SUMS):
 
 ```sh
-sha256sum zr115.tgz      # macOS: shasum -a 256 zr115.tgz
-# expected: 269178b9e270a6d6bbe39b8ec89a759f9dbecc9b116ac0c14cb6f127164031ff
-mkdir zr115 && tar -xzf zr115.tgz -C zr115
+sha256sum zr123.tgz      # macOS: shasum -a 256 zr123.tgz
+# expected: 0ce698cc21297ec8f38b3e9adccdf8f976364a196147adb2ce3315a08271996b
+mkdir zr123 && tar -xzf zr123.tgz -C zr123
 ```
 
 (From a full clone you can instead run `sha256sum -c release/SHA256SUMS` in the repository root.)
@@ -72,13 +83,13 @@ Both routes put the files in the same places on the Kindle:
 2. Create a `zreader` folder at the drive root and copy into it: `out/zreader` (it must end up as `zreader/zreader`, not `zreader/out/zreader`), `zreader-run.sh`, `zreader-maintenance.sh`, `README`, `COPYING` and the `dictionary` folder.
 3. Copy the `kual/zreader` folder into the existing `extensions` folder, so you get `extensions/zreader/menu.json`. Folders merge; don't replace `extensions`.
 4. Put DRM-free books in a `Books` folder at the drive root (sub-folders are fine).
-5. Eject the Kindle safely, unplug it, then open **KUAL → Zig reader → Zig reader (Library)**.
+5. Eject the Kindle safely, unplug it, then open **KUAL → Zig Reader → Zig Reader (Library)**.
 
 No `chmod` is needed. The Kindle's USB storage is FAT, so files can't carry permission bits, but the device mounts it with every file executable (this is how KOReader is installed too). The KUAL entry starts the launcher with `/bin/sh`, and the launcher runs `/mnt/us/zreader/zreader`.
 
 ### B. SSH
 
-Copy `zr115.tgz` to `/mnt/us`, unpack it into an empty staging folder and copy the files to the paths in the table. The full step-by-step commands, including a backup first, are in [Install or upgrade](docs/INSTALL.md). Check with `/mnt/us/zreader/zreader --version` (expect `zreader 0.11.5`).
+Copy `zr123.tgz` to `/mnt/us`, unpack it into an empty staging folder and copy the files to the paths in the table. The full step-by-step commands, including a backup first, are in [Install or upgrade](docs/INSTALL.md). Check with `/mnt/us/zreader/zreader --version` (expect `zreader 0.12.3`).
 
 ### Update
 
@@ -86,11 +97,11 @@ Quit the reader, then copy the new `zreader`, scripts, `dictionary/` and `extens
 
 ### Where your data lives
 
-Everything is in `/mnt/us/zreader/` (the `zreader` folder on the USB drive): `state/` (reading positions), `notes/` (highlights and notes), `export/` (exported notes), `settings.json`, `ui07.json`, `last_book` and `cache/` (saved page images, safe to delete). Logs are `/mnt/us/zreader.log` and `/mnt/us/zreader-stderr.log`. Books stay in `/mnt/us/Books`.
+Everything is in `/mnt/us/zreader/` (the `zreader` folder on the USB drive): `state/` (reading positions), `notes/` (highlights and notes), `export/` (exported notes), `settings.json`, `ui07.json`, `last_book`, `originals/` (originals kept by Shrink) and `cache/` (saved page images and reflow layouts, safe to delete). Logs are `/mnt/us/zreader.log` and `/mnt/us/zreader-stderr.log`. Books stay in `/mnt/us/Books`.
 
 ### Uninstall
 
-Quit the reader, copy `zreader/state`, `zreader/notes` and `zreader/export` to your computer if you want to keep them, then delete the `zreader` folder and `extensions/zreader` (over USB or SSH). Your books, KUAL and the Kindle system are untouched. Details and rollback to the previous release (`release/zr114.tgz`): [uninstall and rollback](docs/UNINSTALL.md).
+Quit the reader, copy `zreader/state`, `zreader/notes` and `zreader/export` to your computer if you want to keep them, then delete the `zreader` folder and `extensions/zreader` (over USB or SSH). Your books, KUAL and the Kindle system are untouched. Details and rollback to the previous release (`release/zr115.tgz`): [uninstall and rollback](docs/UNINSTALL.md).
 
 More: [user guide](docs/USER_GUIDE.md) · [prerequisites](docs/PREREQUISITES.md) · [release notes](release/README.md) · [troubleshooting](docs/TROUBLESHOOTING.md) · [safe cleanup](docs/DEBLOAT.md)
 
@@ -101,6 +112,7 @@ Developers: [build from source](docs/BUILD.md) · [tests](docs/TESTING.md) · [a
 - Tested on one device family (Paperwhite 12th gen); others are untested.
 - Zoom and pan are limited by e-ink refresh; pan applies on release (no pinch).
 - Some scans keep artefacts that are in the source file (for example stray marks in a separated text layer).
+- Reflow is for single-column text; pages that are mostly pictures, or spreads, stay in page view, and some words can sit slightly off the line.
 - Not supported: DRM-protected books, KFX, CBR. Links inside AZW3 books aren't followed yet.
 - Dark depends on the e-ink panel honouring display inversion.
 
@@ -110,6 +122,10 @@ Full list: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
 | Version | Highlights |
 | --- | --- |
+| 0.12.3 | Faster Shrink on JPEG 2000 and already-small scans; better reflow next to pictures and captions. |
+| 0.12.2 | Shrink watchdog; Shrink closes the open book first so it has the device to itself. |
+| 0.12.1 | Shrink for "mixed raster" scans (picture layer plus text mask). |
+| 0.12.0 | Compact menu with View and More panels; Reflow for scanned pages (1.5×, 2×). |
 | 0.11.5 | Zoom/pan on the current half of split spreads; stale renders cancelled (latest wins). |
 | 0.11.4 | Delete book from the library; Theme Light/Dark. |
 | 0.11.3 | Shrink now really downsizes oversized scans; auto-trim on real scans; gentle sharpen in scan cleanup. |
@@ -165,11 +181,11 @@ Normal pages of these scans render in about 0.34–0.37 s each in the background
 
 Warm page turns are unchanged (p50 about 11 ms).
 
-## Benchmark: Zigg Reader vs KOReader
+## Benchmark: Zig Reader vs KOReader
 
-In this test on one device (Kindle Paperwhite 12th gen, Zigg Reader 0.8.0 vs KOReader as installed), with identical injected touch events, a 1.5 MB EPUB and a 47 MB scanned-image PDF. Times run from touch injection to the framebuffer changing, not to the e-ink panel finishing. Lower is better. Full method and raw data: [docs/BENCHMARK.md](docs/BENCHMARK.md).
+In this test on one device (Kindle Paperwhite 12th gen, Zig Reader 0.8.0 vs KOReader as installed), with identical injected touch events, a 1.5 MB EPUB and a 47 MB scanned-image PDF. Times run from touch injection to the framebuffer changing, not to the e-ink panel finishing. Lower is better. Full method and raw data: [docs/BENCHMARK.md](docs/BENCHMARK.md).
 
-| Metric (median) | KOReader | Zigg Reader |
+| Metric (median) | KOReader | Zig Reader |
 | --- | --- | --- |
 | Page turn, EPUB (20 turns) | 59 ms | **45 ms** |
 | Page turn, scanned PDF (20 turns) | 1,286 ms (6 of 20 at ~43 ms, the rest 0.3–2.7 s) | **58 ms** (max 83 ms) |
@@ -179,19 +195,19 @@ In this test on one device (Kindle Paperwhite 12th gen, Zigg Reader 0.8.0 vs KOR
 | Memory (RSS), EPUB | **52 MB** | 57 MB |
 | Memory (RSS), scanned PDF | **133 MB** (peak 156) | 316 MB (peak 336) |
 
-Zigg Reader uses more memory on the PDF because it pre-renders and caches nearby pages, which is what keeps its page turns fast. Rapid taps on the PDF were inconclusive, and KOReader's library-launch samples were invalid, so neither is compared here.
+Zig Reader uses more memory on the PDF because it pre-renders and caches nearby pages, which is what keeps its page turns fast. Rapid taps on the PDF were inconclusive, and KOReader's library-launch samples were invalid, so neither is compared here.
 
-About these numbers: times are to the framebuffer update; the e-ink refresh itself adds roughly 250 ms for both readers. The test measured steady forward reading, where Zigg Reader had already prefetched the next pages. On a heavy scanned PDF, a page that isn't prefetched yet (right after opening, after a jump, or when turning faster than pages render) can take about 1–3 s in Zigg Reader too. KOReader was measured the same way, so the comparison is like for like.
+About these numbers: times are to the framebuffer update; the e-ink refresh itself adds roughly 250 ms for both readers. The test measured steady forward reading, where Zig Reader had already prefetched the next pages. On a heavy scanned PDF, a page that isn't prefetched yet (right after opening, after a jump, or when turning faster than pages render) can take about 1–3 s in Zig Reader too. KOReader was measured the same way, so the comparison is like for like.
 
 ## Size
 
-0.11.5: the ARM executable is **7,760,232 bytes**; the runtime archive is **10.8 MB** (`release/zr115.tgz`), about **26 MiB** installed including the English (14.4 MB) and Latin (5.0 MB) dictionaries ([sizes](release/zr115-sizes.json)).
+0.12.3: the ARM executable is **7,820,496 bytes**; the runtime archive is **10.8 MB** (`zr123.tgz`), about **26 MiB** installed including the English (14.4 MB) and Latin (5.0 MB) dictionaries ([sizes](release/zr123-sizes.json)).
 
 ## Safety
 
 - Back up books, notes, reading state and an older runtime before changing anything.
 - Keep a working **key-only SSH** recovery connection. Never enable passwordless/no-auth access.
-- Never run the stock reader, KOReader and Zigg Reader together.
+- Never run the stock reader, KOReader and Zig Reader together.
 - Do not use USB mass storage while reading.
 - Do not edit `/`, `/var/base-local`, kernel settings, startup jobs or system partitions for cleanup.
 - Do not enable experimental sleep with a stock passcode or rely on it overnight.
@@ -202,7 +218,7 @@ Emergency command, on the Kindle over SSH:
 sh /mnt/us/zreader/zreader-maintenance.sh restore-ui
 ```
 
-Zigg Reader is an independent project, not affiliated with or endorsed by Amazon. Use it at your own risk.
+Zig Reader is an independent project, not affiliated with or endorsed by Amazon. Use it at your own risk.
 
 ## Licence
 

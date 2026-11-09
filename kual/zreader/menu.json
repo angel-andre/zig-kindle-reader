@@ -1,10 +1,10 @@
 {
 	"items": [
 		{
-			"name": "Zig reader",
+			"name": "Zig Reader",
 			"priority": 0,
 			"items": [
-				{ "name": "Zig reader (Library)", "priority": 1, "action": "/mnt/us/extensions/zreader/bin/launch.sh", "params": "@library", "exitmenu": true },
+				{ "name": "Zig Reader (Library)", "priority": 1, "action": "/mnt/us/extensions/zreader/bin/launch.sh", "params": "@library", "exitmenu": true },
 				{ "name": "Continue last book", "priority": 2, "action": "/mnt/us/extensions/zreader/bin/launch.sh", "params": "@last", "exitmenu": true },
 				{ "name": "Debug: timings", "priority": 3, "action": "/mnt/us/extensions/zreader/bin/launch.sh", "params": "--debug @last", "exitmenu": true }
 			]

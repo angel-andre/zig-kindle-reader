@@ -57,4 +57,6 @@ A more detailed plan is at the end of REFERENCE_MANUAL.txt.
 
 ## Latest run
 
-All 24 Zig tests pass, shell syntax checks pass for the build scripts, launcher, maintenance helper and KUAL script, and all release and dictionary checksums verify. See `tests/repository-assembly-validation.txt`.
+0.12.3: all 32 Zig tests pass (including reflow navigation, the saved reflow state and the Shrink watchdog), `./build.sh` rebuilds the exact released ARM binary (SHA-256 `6d24dcbf…ecf7b`), and all release and dictionary checksums verify. `tests/reflow_unit.c` checks that a cached reflow analysis gives pixel-identical screens and that corrupt or missing cache files are rejected; `tests/reflowhook_probe.c` shows what the reader draws for one page with Reflow on.
+
+The README screenshots in `docs/img/` come from `out/zreader-host --sim SCRIPT --shots DIR` with public-domain sample books only.

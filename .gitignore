@@ -17,3 +17,6 @@ maintenance/
 
 .validation/
 tests/run-*/
+
+# Scratch output of --sim screenshots and unit tests
+shots/

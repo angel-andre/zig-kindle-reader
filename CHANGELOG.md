@@ -2,6 +2,24 @@
 
 Earlier versions were early prototypes and are not listed.
 
+## 0.12.3
+
+Faster Shrink and better reflow beside pictures. Shrink now decodes the colour layer of JPEG 2000 scans at half resolution directly (the finest detail level, which would be thrown away anyway, is never decoded), and a lossy image that won't be resampled and is already below 0.9 bits per pixel is no longer decoded only to be re-encoded (a new small MuPDF patch, `mupdf-patches/09`). Reflow keeps text lines that sit inside a kept picture box (for example the first lines beside an illustration) and small caption tiles as text, so they are set with the rest of the page. Reflow cache files from 0.12.0–0.12.2 are re-analysed automatically. Normal page views, digital PDFs and EPUBs render exactly as before.
+
+## 0.12.2
+
+A safer Shrink. Before it starts, Shrink closes the book that is open in the background (render workers, pre-rendering, reflow layouts and caches) so it has the CPU and memory to itself. A watchdog follows its progress: if nothing changes for two minutes, the run is cancelled, and if it still hasn't stopped after the same time again, the dialog gives up and leaves the book unchanged (the temporary file is removed) instead of waiting forever.
+
+## 0.12.1
+
+Shrink for “mixed raster” scans. Some scanned books store each page as a picture layer plus a colour layer seen only through a sharp 1-bit text mask. Their pictures are already below screen resolution, so Shrink used to leave them alone. The colour layer under such a mask only tints the print, so it is now stored as a greyscale JPEG at half its resolution; the mask (the shape of every letter) and the picture layer aren't touched, and the result is kept only if it is smaller.
+
+## 0.12.0
+
+Compact menu and Reflow for scanned pages. The in-book menu is now one row under the page number and slider: **Contents, Bookmark, Notes, Search, View, More**. **View** opens a panel with the display settings of the current book (text size, margins, spacing, Font, Align, Refresh and Go to start for reflowable books; view mode, Reset pan, Trim, Split, Reflow and Refresh for PDFs). **More** opens Bookmarks, Export all, Settings and Full refresh. Button labels that don't fit are drawn a size smaller instead of being cut off.
+
+**Reflow** (View, scanned PDFs only) cycles off → 1.5× → 2×. It finds the text lines and words on a scanned page (or split half), keeps pictures as they are and sets the words again, larger, over as many screens as needed. Forward and back step through the screens and then turn the page; a back turn lands on the previous page's last screen, and the pages around the current one are prepared in the background as before. Pages that can't be reflowed safely (mostly pictures, or spreads) and any error keep the normal page view. The analysis is cached per page, half and scale in `cache/reflow`, and the setting is saved per book. Light and Dark both work.
+
 ## 0.11.5
 
 Smoother zoom. On two-page scans shown one page at a time, zooming in and panning now work on the half you are reading instead of the whole spread (the facing page never shows), and zooming out returns to the same half. Each new zoom or pan cancels any render still running for the previous view, so the latest one wins and the sharp page arrives sooner after quick gestures. The instant scaled preview from 0.11.2 and its non-flashing swap are kept. Normal page views, digital PDFs and EPUBs render exactly as before; Light and Dark both work.

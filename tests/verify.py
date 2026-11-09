@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Black-box host/UI checks. Run after ./build.sh and tests/run.sh.
-Requires the owner's local test PDF; it is deliberately not distributed.
+Requires my local test PDF; it is deliberately not distributed.
 """
 from pathlib import Path
 import hashlib,json,struct,subprocess,tempfile,zipfile

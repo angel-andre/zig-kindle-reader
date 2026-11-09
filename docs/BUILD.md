@@ -4,7 +4,7 @@ Build on a Linux x86-64 computer, not the Kindle. Tested toolchain: **Zig 0.17.1
 
 ## 1. Obtain exact MuPDF source
 
-The extracted source used by the build was compared file-by-file with the original archive: no changed or missing archive files were found. There are **no project-specific MuPDF patches**. Feature trimming is through `build-mupdf.sh` flags; the project's own renderer wrapper is `src/render.c`.
+Start from the original MuPDF 1.28.6 archive. `build-mupdf.sh` applies the small patches in `mupdf-patches/` once (01 hyphenation language; 02 TXT paragraphs; 03 azw/azw3 names; 04 page-break-before for non-EPUB books; 05 AZW3 KF8 join; 06 parallel JPEG 2000 decoding; 07 full-tile JPEG 2000 decoding; 08 greyscale image rewrite with progress and cancel for Shrink; 09 Shrink skips re-encoding lossy images that are already small); feature trimming is through `build-mupdf.sh` flags; the project's own renderer wrapper is `src/render.c`.
 
 Download the official complete source archive, including bundled dependencies, on your computer:
 

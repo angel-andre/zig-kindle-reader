@@ -30,7 +30,7 @@ trial z-pdf 10 zreader
 nohup sh /mnt/us/koreader/koreader.sh "$B/book.pdf" >"$B/ko-pdf-launch.log" 2>&1 </dev/null &
 sleep 15
 trial ko-pdf 10 reader.lua
-# Restore the user's history, global reader settings, and Zigg reading positions.
+# Restore the user's history, global reader settings, and Zig Reader reading positions.
 cp -p "$B/ko-bak/settings.reader.lua" /mnt/us/koreader/settings.reader.lua
 for f in history.lua history.lua.old; do
  if [ -f "$B/ko-bak/$f" ]; then cp -p "$B/ko-bak/$f" "/mnt/us/koreader/$f"; else rm -f "/mnt/us/koreader/$f"; fi

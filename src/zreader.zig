@@ -4,7 +4,7 @@ const std = @import("std");
 const linux = std.os.linux;
 const alloc = std.heap.c_allocator;
 
-const VERSION = "0.11.5";
+const VERSION = "0.12.3";
 const sans_font = @embedFile("fonts/NotoSans-Regular.otf");
 // v0.10.0 second book font (OFL, Latin subset) and compact Latin hyphenation patterns (MIT).
 const sans_bold = @embedFile("fonts/NotoSans-Bold-Latin.ttf");
@@ -88,6 +88,8 @@ extern fn zr_relayout(z: *ZrDoc, lw: f32, lh: f32, font: f32, margin: f32, page:
 extern fn zr_page_bounds(z: *ZrDoc, page: c_int, r: *[4]f32) c_int;
 extern fn zr_ink_bbox(z: *ZrDoc, page: c_int, r: *[4]f32, no_images: c_int) c_int;
 extern fn zr_ink_bbox_flags(z: *ZrDoc, page: c_int, r: *[4]f32, no_images: c_int, flags: c_int) c_int;
+extern fn zr_reflow_mem(cache: [*:0]const u8, out: [*]u8, w: c_int, h: c_int, stride: c_int, screen: c_int, count: *c_int, index: *c_int) c_int;
+extern fn zr_reflow_screen(z: *ZrDoc, page: c_int, r: *const [4]f32, scale10: c_int, cache: ?[*:0]const u8, out: [*]u8, w: c_int, h: c_int, stride: c_int, screen: c_int, count: *c_int, index: *c_int) c_int;
 extern fn zr_render(z: *ZrDoc, page: c_int, m: *const [6]f32, out: [*]u8, w: c_int, h: c_int, stride: c_int, no_images: c_int) c_int;
 const ZrRenderStats = extern struct { image_coverage: f32 = 0, image_count: c_int = 0, cleaned: c_int = 0, drafted: c_int = 0 };
 extern fn zr_draft_wanted(z: *ZrDoc, page: c_int, flags: c_int, w: c_int, h: c_int) c_int;
@@ -766,7 +768,10 @@ fn smallButton(r: Rect, label: []const u8) void {
 fn button(r: Rect, label: []const u8, active: bool) void {
     fill(r, if (active) 0x00 else 0xFF);
     frame(r, 3, 0x00);
-    textCenter(SANS, 34, r, label, if (active) 0xFF else 0x00);
+    // v0.12.0: labels that do not fit with 12 px padding each side step down in size (34 -> 22 at least).
+    var size: f32 = 34;
+    while (size > 22 and textW(SANS, size, label) > @as(f32, @floatFromInt(r.w - 24))) size -= 2;
+    textCenter(SANS, size, r, label, if (active) 0xFF else 0x00);
 }
 
 // ---------------- measured-content refresh policy ----------------
@@ -917,13 +922,13 @@ fn cycleRefreshSetting() void {
     const path = std.fmt.bufPrint(&p, "{s}/settings.json", .{opts.data}) catch return;
     const data = std.fmt.bufPrint(&b, "{{\"full_refresh\":{d},\"refresh_policy\":9}}\n", .{opts.full_refresh}) catch return;
     if (!writeFileAtomic(path, data)) toast("Could not save refresh setting", .{});
-    markDirty(bottomPanel(), WF_GL16);
+    markDirty(menuArea(), WF_GL16);
 }
 
 // ---------------- page cache + render workers ----------------
 const NSLOT = 14;
 const SlotState = enum(u8) { empty, rendering, ready, failed };
-const Slot = struct { draft: bool = false, step: i32 = 0, geometry: ViewGeometry = .{}, metrics: PageMetrics = .{}, page: i32 = -1, gen: u32 = 0, state: SlotState = .empty, buf: []u8 = &.{}, used: u64 = 0, m: [6]f32 = .{ 1, 0, 0, 1, 0, 0 } };
+const Slot = struct { draft: bool = false, step: i32 = 0, geometry: ViewGeometry = .{}, metrics: PageMetrics = .{}, page: i32 = -1, gen: u32 = 0, state: SlotState = .empty, buf: []u8 = &.{}, used: u64 = 0, m: [6]f32 = .{ 1, 0, 0, 1, 0, 0 }, rcount: i32 = 0, rindex: i32 = 0 };
 const Trim = struct { done: bool = false, r: [4]f32 = .{ 0, 0, 0, 0 } };
 const Pool = struct {
     mtx: PMutex = .{},
@@ -943,6 +948,8 @@ const Pool = struct {
     paginating: bool = false,
     trim: bool = false,
     split: bool = true,
+    reflow: u8 = 0, // v0.12.0: 0 off, 15 = 1.5x, 20 = 2x (scanned books only)
+    rscreen: i32 = 0, // reflow screen on the current page/half; -1 = its last screen
     no_images: bool = false,
     trims: []Trim = &.{},
     font: f32 = 10.5,
@@ -1341,6 +1348,34 @@ fn zoomCycle(x: i32, y: i32) void {
     setView(next, .{ x, y });
 }
 fn turnView(direction: i32, t: u64) void {
+    if (pool.reflow != 0 and pool.shown >= 0) {
+        const sl = &pool.slots[@intCast(pool.shown)];
+        if (reflowStep(sl.rcount, sl.rindex, direction)) |n| {
+            _ = pthread_mutex_lock(&pool.mtx);
+            pool.rscreen = n;
+            pool.dir = direction;
+            // Only the shown page's slot is redrawn (its screens come from the in-memory layout);
+            // the prepared neighbour pages stay.
+            sl.state = .empty;
+            sl.page = -1;
+            pool.shown = -1;
+            _ = pthread_cond_broadcast(&pool.cond);
+            _ = pthread_mutex_unlock(&pool.mtx);
+            need_page = true;
+            book.state_dirty = true;
+            sel_active = false;
+            popup_open = false;
+            t_tap = t;
+            tap_pending_measure = t != 0;
+            stats_last_activity = nowUs();
+            logf("reflow screen: page={d} screen={d}/{d}", .{ pool.cur + 1, n + 1, sl.rcount });
+            return;
+        }
+        _ = pthread_mutex_lock(&pool.mtx);
+        pool.rscreen = if (direction < 0) -1 else 0;
+        _ = pthread_mutex_unlock(&pool.mtx);
+        rscreen_keep = true;
+    }
     if (book.is_pdf and (pool.view == .width or splitActive())) {
         const g = visibleGeometry() orelse return;
         const step = g.actual_step + direction;
@@ -1446,6 +1481,9 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
         // v0.10.5: the page the user is waiting for, if heavy, is drawn as a draft first.
         const waiting = job.p == pool.cur and job.step == pool.step and mode == .page and book.is_pdf and draft_slot == null and !pool.no_images and !pool.slots[job.s].draft;
         const my_gen_draft = pool.gen;
+        // v0.12.0: pages behind the current one are prepared on their last screen (what a back turn
+        // shows), pages ahead on screen 1.
+        const my_rscreen: i32 = if (job.p == pool.cur and job.step == pool.step) pool.rscreen else if (job.p < pool.cur or (job.p == pool.cur and job.step < pool.step)) -1 else 0;
         _ = pthread_mutex_unlock(&pool.mtx);
 
         if (waiting and workerDraft(doc, job, my_gen_draft)) {
@@ -1465,8 +1503,16 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
         const geometry = viewGeometryP(doc, job.p, wi, r, mode, base_width, job.step, pan_x, pan_y);
         const m = geometry.m;
         var render_stats: ZrRenderStats = .{};
-        if (rc == 0) rc = zr_render_with_stats(doc, job.p, &m, slot.buf.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), ni, imageFlags(), &render_stats);
-        if (rc == 0) clipHalf(slot.buf, geometry);
+        var rinfo: [2]i32 = .{ 0, 0 };
+        const from_mem = if (rc == 0 and mode == .page) reflowFromMemory(doc, job.p, wi, geometry, slot.buf, my_rscreen) else null;
+        if (from_mem) |fm| {
+            rinfo = fm;
+            render_stats.image_coverage = 1; // a reflowed scan: same refresh rules as when it was laid out
+        } else {
+            if (rc == 0) rc = zr_render_with_stats(doc, job.p, &m, slot.buf.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), ni, imageFlags(), &render_stats);
+            if (rc == 0) clipHalf(slot.buf, geometry);
+            if (rc == 0 and mode == .page) rinfo = reflowSlot(doc, job.p, wi, geometry, render_stats.image_coverage, slot.buf, my_rscreen);
+        }
         const metrics = pageMetrics(slot.buf, W, H, STRIDE, render_stats.image_coverage);
         const dt = nowUs() - t0;
 
@@ -1487,6 +1533,8 @@ fn workerThread(_: ?*anyopaque) callconv(.c) ?*anyopaque {
         slot.m = m;
         slot.geometry = geometry;
         slot.metrics = metrics;
+        slot.rcount = rinfo[0];
+        slot.rindex = rinfo[1];
         slot.state = if (rc == 0) .ready else .failed;
         if (rc != 0) {
             pool.errors += 1;
@@ -1559,7 +1607,7 @@ fn notesBase(out: []u8) []const u8 {
     return std.fmt.bufPrint(out, "{s}/notes/{s}", .{ opts.data, clean[0..n.len] }) catch "";
 }
 
-const State = struct { anchor: Anchor = .{}, typography: bool = true, spacing: f32 = 1.4, view: ViewMode = .page, base_width: bool = false, step: i32 = 0, pan_x: f32 = 0, pan_y: f32 = 0, page: i32 = 0, font: f32 = 10.5, margin: f32 = 18, trim: bool = true, split: bool = true, opened: i64 = 0, pages: i32 = 0 };
+const State = struct { anchor: Anchor = .{}, typography: bool = true, spacing: f32 = 1.4, view: ViewMode = .page, base_width: bool = false, step: i32 = 0, pan_x: f32 = 0, pan_y: f32 = 0, page: i32 = 0, font: f32 = 10.5, margin: f32 = 18, trim: bool = true, split: bool = true, reflow: u8 = 0, rscreen: i32 = 0, opened: i64 = 0, pages: i32 = 0 };
 fn readAnchor(data: []const u8) Anchor {
     var a: Anchor = .{};
     if ((jsonNum(data, "anchor_version") orelse 0) != 1) return a;
@@ -1594,13 +1642,17 @@ fn repairOpened(v: f64) i64 {
     return if (n < 0) n + 4294967296 else n;
 }
 fn loadState(path: []const u8) State {
-    var st: State = .{};
+    const st: State = .{};
     var pb: [1200]u8 = undefined;
     var zb: [1200]u8 = undefined;
     const p = statePath(path, &pb);
     const z = std.fmt.bufPrintSentinel(&zb, "{s}", .{p}, 0) catch return st;
     const data = readFile(z) orelse return st;
     defer alloc.free(data);
+    return parseState(data);
+}
+fn parseState(data: []const u8) State {
+    var st: State = .{};
     st.anchor = readAnchor(data);
     st.typography = (jsonNum(data, "typography_version") orelse 0) == 1;
     if (jsonNum(data, "spacing")) |v| st.spacing = std.math.clamp(@as(f32, @floatCast(v)), 1.15, 1.7);
@@ -1620,6 +1672,8 @@ fn loadState(path: []const u8) State {
     if (jsonNum(data, "margin")) |v| st.margin = std.math.clamp(@as(f32, @floatCast(v)), 0, 60);
     if (jsonNum(data, "trim")) |v| st.trim = v != 0;
     if (jsonNum(data, "split")) |v| st.split = v != 0;
+    if (jsonNum(data, "reflow")) |v| st.reflow = if (v == 15 or v == 20) @intFromFloat(v) else 0;
+    if (jsonNum(data, "rscreen")) |v| st.rscreen = std.math.clamp(@as(i32, @intFromFloat(v)), 0, 999);
     if (jsonNum(data, "opened")) |v| st.opened = repairOpened(v);
     if (jsonNum(data, "pages")) |v| st.pages = @intFromFloat(v);
     return st;
@@ -1638,6 +1692,7 @@ fn saveState() void {
         writeAnchor(&b, book.position);
     }
     b.print("\"typography_version\":1,\"spacing\":{d:.2},", .{pool.spacing});
+    if (pool.reflow != 0) b.print("\"reflow\":{d},\"rscreen\":{d},", .{ pool.reflow, shownReflowIndex() }); // written only when on, so files are unchanged with Reflow off
     b.print("\"page\":{d},\"pages\":{d},\"opened\":{d},\"font\":{d:.2},\"margin\":{d:.1},\"trim\":{d},\"split\":{d}}}\n", .{
         pool.cur, pool.npages, book.opened_ts, pool.font, pool.margin, @intFromBool(pool.trim), @intFromBool(pool.split),
     });
@@ -1868,8 +1923,8 @@ fn pcName(path: []const u8, out: *[32]u8) [*:0]const u8 {
 }
 fn pcKey(page: i32, view: u8, step: i32, pan_x: f32, pan_y: f32, base_width: bool, trim: bool, font: f32, margin: f32, spacing: f32, a: Anchor) u64 {
     var b: [512]u8 = undefined;
-    const k = std.fmt.bufPrint(&b, "zrpg1|{s}|{d}|{d}|{d}x{d}|d{d}|c{d}|i{d}|p{d}|v{d}|s{d}|x{d:.9}|y{d:.9}|b{d}|t{d}|f{d:.2}|m{d:.1}|l{d:.2}|a{d}:{d}:{d}:{x}|sp{d}", .{
-        book.pathS(), book.fsize, book.fmtime, W, H, @intFromBool(opts.image_dither), @intFromBool(opts.clean_scans), @intFromBool(opts.no_images), page, view, step, pan_x, pan_y, @intFromBool(base_width), @intFromBool(trim), font, margin, spacing, a.chapter, a.start, a.end, a.hash, @intFromBool(pool.split),
+    const k = std.fmt.bufPrint(&b, "zrpg1|{s}|{d}|{d}|{d}x{d}|d{d}|c{d}|i{d}|p{d}|v{d}|s{d}|x{d:.9}|y{d:.9}|b{d}|t{d}|f{d:.2}|m{d:.1}|l{d:.2}|a{d}:{d}:{d}:{x}|sp{d}{s}", .{
+        book.pathS(), book.fsize, book.fmtime, W, H, @intFromBool(opts.image_dither), @intFromBool(opts.clean_scans), @intFromBool(opts.no_images), page, view, step, pan_x, pan_y, @intFromBool(base_width), @intFromBool(trim), font, margin, spacing, a.chapter, a.start, a.end, a.hash, @intFromBool(pool.split), if (pool.reflow == 15) "|rf15" else if (pool.reflow == 20) "|rf20" else "",
     }) catch return 0;
     if (book.reflow and (text_mode != 0 or book_font != 0)) {
         var b2: [600]u8 = undefined;
@@ -2137,6 +2192,76 @@ fn preemptForCurrent() void {
         };
     }
 }
+// v0.12.0: with Reflow on, a scanned page (or split half) is replaced by reflow screen 1. Page-view and
+// spread outcomes (and any error) keep today's render untouched. The analysis is cached per page, half and
+// scale in DATA/cache/reflow. Light/Dark and refresh are applied later on the normal display path.
+// Returns {screen count, screen shown}; {0, 0} when today's view is kept.
+const ReflowTarget = struct { r: [4]f32, path: [700]u8 = undefined, len: usize = 0 };
+// Region (page or split half, in page units) and cache path for a reflow of page p.
+fn reflowTarget(doc: *ZrDoc, p: i32, wi: usize, g: ViewGeometry, t: *ReflowTarget) bool {
+    const sc = pool.reflow;
+    var r: [4]f32 = .{ 0, 0, 612, 792 };
+    if (zr_page_bounds(doc, p, &r) != 0) return false;
+    var half: i32 = -1;
+    if (g.steps == 2 and splitActive()) {
+        const xs = spreadSplit(doc, p, wi);
+        if (xs > r[0] + 1 and xs < r[2] - 1) {
+            half = g.actual_step;
+            if (half == 0) r[2] = xs else r[0] = xs;
+        }
+    }
+    t.r = r;
+    var db: [600]u8 = undefined;
+    const dir = std.fmt.bufPrint(&db, "{s}/cache/reflow", .{opts.data}) catch return false;
+    mkdirP(dir);
+    var kb: [700]u8 = undefined;
+    const key = std.fmt.bufPrint(&kb, "rf1|{s}|{d}|{d}|{d}|{d}|{d}", .{ book.pathS(), book.fsize, book.fmtime, p, half, sc }) catch return false;
+    const path = std.fmt.bufPrintSentinel(&t.path, "{s}/{x:0>16}.rf", .{ dir, fnv(key) }, 0) catch return false;
+    t.len = path.len;
+    return true;
+}
+// v0.12.0: a page whose reflow screens are already laid out in memory (screen step, or a prepared
+// neighbour) is drawn straight from them: no page render underneath.
+fn reflowFromMemory(doc: *ZrDoc, p: i32, wi: usize, g: ViewGeometry, buf: []u8, want_screen: i32) ?[2]i32 {
+    if (pool.reflow == 0 or !book.is_pdf or book.reflow) return null;
+    var t: ReflowTarget = .{ .r = undefined };
+    if (!reflowTarget(doc, p, wi, g, &t)) return null;
+    var count: c_int = 0;
+    var index: c_int = 0;
+    if (zr_reflow_mem(@ptrCast(&t.path), buf.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), want_screen, &count, &index) != 1) return null;
+    return .{ count, index };
+}
+// Returns {screen count, screen shown}; {0, 0} when today's view is kept.
+fn reflowSlot(doc: *ZrDoc, p: i32, wi: usize, g: ViewGeometry, image_coverage: f32, buf: []u8, want_screen: i32) [2]i32 {
+    const none = [2]i32{ 0, 0 };
+    const sc = pool.reflow;
+    if (sc == 0 or !book.is_pdf or book.reflow or image_coverage < 0.5) return none;
+    var t: ReflowTarget = .{ .r = undefined };
+    if (!reflowTarget(doc, p, wi, g, &t)) return none;
+    const r = t.r;
+    const path = t.path[0..t.len :0];
+    var count: c_int = 0;
+    var index: c_int = 0;
+    const rc = zr_reflow_screen(doc, p, &r, sc, path.ptr, buf.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), want_screen, &count, &index);
+    if (rc < 0) logf("reflow failed on page {d}; showing the page", .{p + 1});
+    return if (rc == 1) .{ count, index } else none;
+}
+var rscreen_keep: bool = false;
+// Reflow screen shown now (0 when the page is shown as today).
+fn shownReflowIndex() i32 {
+    if (pool.shown < 0) return 0;
+    const sl = &pool.slots[@intCast(pool.shown)];
+    return if (sl.rcount > 0) sl.rindex else 0;
+}
+// v0.12.0 navigation inside a reflowed page: forward/back step through its screens; past either end the
+// normal page/half turn runs and the next page opens on screen 1 (forward) or its last screen (back).
+// Pure decision so it can be unit-tested: returns the new screen, or null to turn the page.
+fn reflowStep(rcount: i32, rindex: i32, direction: i32) ?i32 {
+    if (rcount <= 1) return null;
+    const n = rindex + direction;
+    return if (n >= 0 and n < rcount) n else null;
+}
+
 fn renderFirstRaster(doc: *ZrDoc) void {
     pool.slots[0].draft = false;
     if (renderDraftRaster(doc)) return;
@@ -2149,6 +2274,9 @@ fn renderFirstRaster(doc: *ZrDoc) void {
     var rs: ZrRenderStats = .{};
     const rendered = rc == 0 and zr_render_with_stats(doc, pool.cur, &slot.m, slot.buf.ptr, @intCast(W), @intCast(H), @intCast(STRIDE), ni, imageFlags(), &rs) == 0;
     if (rendered) clipHalf(slot.buf, slot.geometry);
+    const ri = if (rendered and pool.view == .page) reflowSlot(doc, pool.cur, 3, slot.geometry, rs.image_coverage, slot.buf, pool.rscreen) else [2]i32{ 0, 0 };
+    slot.rcount = ri[0];
+    slot.rindex = ri[1];
     slot.page = pool.cur; slot.step = pool.step; slot.gen = pool.gen;
     slot.state = if (rendered) .ready else .failed;
     slot.metrics = pageMetrics(slot.buf, W, H, STRIDE, rs.image_coverage);
@@ -2250,6 +2378,9 @@ fn openBook(path: []const u8) bool {
     pool.margin = st.margin;
     pool.trim = book.is_pdf and st.trim;
     pool.split = st.split;
+    pool.reflow = if (book.is_pdf) st.reflow else 0;
+    pool.rscreen = if (pool.reflow != 0) st.rscreen else 0;
+    book_scan = false;
     resetSpreads();
     pool.view = if (book.is_pdf) st.view else .page;
     pool.base_width = st.base_width;
@@ -3045,19 +3176,29 @@ fn toast(comptime fmt: []const u8, args: anytype) void {
 fn topBar() Rect {
     return .{ .x = 0, .y = 0, .w = @intCast(W), .h = 170 };
 }
+// v0.12.0: the Reflow row (under the Split row) is offered only for scanned PDFs. book_scan is set once
+// a page of the book is shown that is drawn mostly from images, and stays set for the open book.
+var book_scan: bool = false;
+fn reflowRowShown() bool {
+    return reflowShown();
+}
+// v0.12.0 menu: one main row (Contents, Bookmark, Notes, Search, View, More) under the page info and slider;
+// View and More open a sub-panel directly above the main panel.
+const MenuSub = enum { none, view, more };
+var menu_sub: MenuSub = .none;
 fn bottomPanel() Rect {
-    const h: i32 = 760;
+    const h: i32 = 380;
     return .{ .x = 0, .y = @as(i32, @intCast(H)) - h, .w = @intCast(W), .h = h };
 }
 fn spacingButton() Rect {
-    return .{ .x = 406, .y = @as(i32, @intCast(H)) - 182, .w = 460, .h = 75 };
+    return subButton(1, 0);
 }
 // v0.10.0 EPUB text controls either side of line spacing.
 fn bookFontButton() Rect {
-    return .{ .x = 70, .y = @as(i32, @intCast(H)) - 182, .w = 320, .h = 75 };
+    return subButton(1, 1);
 }
 fn textModeButton() Rect {
-    return .{ .x = 882, .y = @as(i32, @intCast(H)) - 182, .w = @as(i32, @intCast(W)) - 70 - 882, .h = 75 };
+    return subButton(1, 2);
 }
 var text_mode: c_int = 2; // 0 publisher/0.9.x, 1 justify, 2 justify + hyphenation
 var book_font: c_int = 0; // 0 book's own, 1 Charis SIL (serif), 2 Noto Sans
@@ -3075,17 +3216,50 @@ fn setTextStyle(mode: c_int, font: c_int) void {
     need_page = true;
 }
 fn refreshButton() Rect {
-    return .{ .x = 70, .y = @as(i32, @intCast(H)) - 95, .w = @as(i32, @intCast(W)) - 140, .h = 75 };
+    const a = subButton(1, 0);
+    const b = subButton(1, 3);
+    return .{ .x = a.x, .y = a.y, .w = b.x + b.w - a.x, .h = a.h };
 }
 fn sliderRect() Rect {
     const p = bottomPanel();
     return .{ .x = 70, .y = p.y + 110, .w = @as(i32, @intCast(W)) - 140, .h = 70 };
 }
-fn panelButton(row: i32, col: i32) Rect {
+const MAIN_NAMES = [_][]const u8{ "Contents", "Bookmark", "Notes", "Search", "View", "More" };
+fn mainButton(col: i32) Rect {
     const p = bottomPanel();
+    const gap: i32 = 16;
+    const bw = @divTrunc(@as(i32, @intCast(W)) - 140 - 5 * gap, 6);
+    return .{ .x = 70 + col * (bw + gap), .y = p.y + 230, .w = bw, .h = 100 };
+}
+fn subRows() i32 {
+    return switch (menu_sub) {
+        .none => 0,
+        .view => if (book.reflow) 3 else 2,
+        .more => 2,
+    };
+}
+fn subPanel() Rect {
+    const p = bottomPanel();
+    const h = 30 + subRows() * 120 + 10;
+    return .{ .x = 0, .y = p.y - h, .w = @intCast(W), .h = h };
+}
+fn subButton(row: i32, col: i32) Rect {
+    const sp = subPanel();
     const gap: i32 = 24;
     const bw = @divTrunc(@as(i32, @intCast(W)) - 140 - 3 * gap, 4);
-    return .{ .x = 70 + col * (bw + gap), .y = p.y + 210 + row * 130, .w = bw, .h = 100 };
+    return .{ .x = 70 + col * (bw + gap), .y = sp.y + 30 + row * 120, .w = bw, .h = 100 };
+}
+// The whole menu area on screen (main panel plus any open sub-panel).
+fn menuArea() Rect {
+    return if (menu_sub == .none) bottomPanel() else Rect.unite(subPanel(), bottomPanel());
+}
+// For the --sim "menubtn" command: row 0 = main row, rows 1.. = sub-panel rows.
+fn panelButton(row: i32, col: i32) Rect {
+    return if (row == 0) mainButton(col) else subButton(row - 1, col);
+}
+// v0.12.0: Reflow is offered in the View panel for scanned PDFs (or while it is on).
+fn reflowShown() bool {
+    return book.is_pdf and !book.reflow and (book_scan or pool.reflow != 0);
 }
 fn topButton(right: bool) Rect {
     return if (right) .{ .x = @as(i32, @intCast(W)) - 250, .y = 40, .w = 210, .h = 90 } else .{ .x = 40, .y = 40, .w = 250, .h = 90 };
@@ -3497,7 +3671,16 @@ fn drawOverlays() void {
     }
 }
 
+const REFLOW_NAMES = [_][]const u8{ "Reflow: off", "Reflow: 1.5x", "Reflow: 2x" };
+fn reflowIndex() usize {
+    return switch (pool.reflow) {
+        15 => 1,
+        20 => 2,
+        else => 0,
+    };
+}
 fn drawMenu() void {
+    if (shownImagePage()) book_scan = true;
     const tb = topBar();
     fill(tb, 0xFF);
     fill(.{ .x = 0, .y = tb.h - 3, .w = tb.w, .h = 3 }, 0x00);
@@ -3529,34 +3712,46 @@ fn drawMenu() void {
     fill(.{ .x = kx - 18, .y = sr.y + 8, .w = 36, .h = 54 }, 0x00);
     fill(.{ .x = kx - 12, .y = sr.y + 14, .w = 24, .h = 42 }, 0xFF);
 
-    button(panelButton(0, 0), "Contents", false);
-    button(panelButton(0, 1), "Notes", false);
-    button(panelButton(0, 2), "Refresh", false);
-    if (book.is_pdf) button(panelButton(0, 3), if (pool.trim) "Trim: on" else "Trim: off", pool.trim) else button(panelButton(0, 3), "Go to start", false);
-    if (book.is_pdf) {
-        button(panelButton(1, 0), VIEW_NAMES[@backingInt(pool.view)], false);
-        // 0.9.4: "Up"/"Down" removed (page taps and swipes do the same); row 1
-        // columns 2-3 are free for future buttons.
-        button(panelButton(1, 1), "Reset pan", false);
-        button(panelButton(1, 2), if (bookmarkIndex(pool.cur) != null) "Unbookmark" else "Bookmark", bookmarkIndex(pool.cur) != null);
-        button(panelButton(1, 3), if (pool.split) "Split: on" else "Split: off", pool.split);
+    const bm = bookmarkIndex(pool.cur) != null;
+    for (MAIN_NAMES, 0..) |name, c| {
+        const ci: i32 = @intCast(c);
+        const on = (ci == 1 and bm) or (ci == 4 and menu_sub == .view) or (ci == 5 and menu_sub == .more);
+        button(mainButton(ci), if (ci == 1 and bm) "Unbookmark" else name, on);
     }
-    button(panelButton(2, 0), "Search", false);
-    button(panelButton(2, 1), "Export all", false);
-    button(panelButton(2, 2), "Settings", false);
-    button(panelButton(2, 3), "Bookmarks", false);
-    drawRefreshButton();
+    if (menu_sub == .none) return;
+    const sp = subPanel();
+    fill(sp, 0xFF);
+    fill(.{ .x = 0, .y = sp.y, .w = sp.w, .h = 3 }, 0x00);
+    if (menu_sub == .more) {
+        button(subButton(0, 0), "Bookmarks", false);
+        button(subButton(0, 1), "Export all", false);
+        button(subButton(0, 2), "Settings", false);
+        button(subButton(0, 3), "Back", false);
+        drawRefreshButton();
+        return;
+    }
     if (book.reflow) {
-        button(panelButton(1, 0), "Text -", false);
-        button(panelButton(1, 1), "Text +", false);
-        button(panelButton(1, 2), "Margin -", false);
-        button(panelButton(1, 3), "Margin +", false);
+        button(subButton(0, 0), "Text -", false);
+        button(subButton(0, 1), "Text +", false);
+        button(subButton(0, 2), "Margin -", false);
+        button(subButton(0, 3), "Margin +", false);
         var sb: [128]u8 = undefined;
-        const label = std.fmt.bufPrint(&sb, "{d:.0}px / spacing {d:.2}x", .{ pool.font / 0.75, pool.spacing }) catch "Line spacing";
+        const label = std.fmt.bufPrint(&sb, "{d:.0}px / {d:.2}x", .{ pool.font / 0.75, pool.spacing }) catch "Spacing";
         button(spacingButton(), label, false);
         smallButton(bookFontButton(), BOOK_FONT_NAMES[@intCast(book_font)]);
         smallButton(textModeButton(), TEXT_MODE_NAMES[@intCast(text_mode)]);
+        button(subButton(1, 3), "Refresh", false);
+        button(subButton(2, 0), "Go to start", false);
+        button(subButton(2, 3), "Back", false);
+        return;
     }
+    button(subButton(0, 0), VIEW_NAMES[@backingInt(pool.view)], false);
+    button(subButton(0, 1), "Reset pan", false);
+    button(subButton(0, 2), if (pool.trim) "Trim: on" else "Trim: off", pool.trim);
+    button(subButton(0, 3), if (pool.split) "Split: on" else "Split: off", pool.split);
+    if (reflowShown()) button(subButton(1, 0), REFLOW_NAMES[reflowIndex()], pool.reflow != 0);
+    button(subButton(1, 1), "Refresh", false);
+    button(subButton(1, 3), "Back", false);
 }
 
 fn drawRefreshButton() void {
@@ -4957,6 +5152,29 @@ var shrink_tmp: [1100:0]u8 = undefined;
 var shrink_before: i64 = 0;
 var shrink_last: i32 = -1;
 var shrink_tick_us: u64 = 0;
+// v0.12.2: Shrink watchdog. Progress is the (phase, done) pair; without a change for
+// SHRINK_STALL_US the run is cancelled, and if it still does not finish within the same
+// time again the dialog gives up (book unchanged, temp removed) instead of waiting forever.
+const SHRINK_STALL_US: u64 = 120_000_000;
+var shrink_progress_us: u64 = 0;
+var shrink_progress_key: i64 = -1;
+var shrink_watch_cancelled: bool = false;
+var shrink_abandoned: bool = false;
+fn shrinkWatch(ph: c_int, done: c_int, now: u64) enum { ok, cancel, give_up } {
+    const key: i64 = @as(i64, ph) * 1_000_000_000 + done;
+    if (key != shrink_progress_key) {
+        shrink_progress_key = key;
+        shrink_progress_us = now;
+        return .ok;
+    }
+    if (now -| shrink_progress_us < SHRINK_STALL_US) return .ok;
+    if (!shrink_watch_cancelled) {
+        shrink_watch_cancelled = true;
+        shrink_progress_us = now;
+        return .cancel;
+    }
+    return .give_up;
+}
 fn mb(b: i64) f64 {
     return @as(f64, @floatFromInt(b)) / 1_000_000.0;
 }
@@ -4985,19 +5203,49 @@ fn startShrink(e: *Entry) void {
         setShrinkMsg("Not enough free space ({d:.0} MB free, {d:.0} MB needed)", .{ mb(free), mb(shrink_before + 20_000_000) });
         return markFull(WF_REAGL);
     }
+    if (shrink_abandoned and zr_shrink_progress(&shrink_dummy_d, &shrink_dummy_t) != 3) return toast("The last shrink is still stopping; try again shortly", .{});
+    shrink_abandoned = false;
+    // v0.12.2: the book open in the background (render workers, prerender, reflow layouts,
+    // its caches) is closed first so Shrink has the CPU and memory to itself.
+    if (book.open) {
+        logf("shrink: closing the open book first", .{});
+        closeBook();
+    }
     if (zr_shrink_start(p, tmp) != 0) return toast("Could not start", .{});
+    logf("shrink: started {s} ({d} bytes)", .{ e.path, shrink_before });
+    shrink_progress_key = -1;
+    shrink_progress_us = nowUs();
+    shrink_watch_cancelled = false;
     lib_menu = .shrink_run;
     shrink_last = -1;
     setShrinkMsg("Shrinking ({d:.1} MB): starting...", .{mb(shrink_before)});
     markFull(WF_REAGL);
 }
+var shrink_dummy_d: c_int = 0;
+var shrink_dummy_t: c_int = 0;
 fn shrinkTick() void {
     if (lib_menu != .shrink_run) return;
     var done: c_int = 0;
     var total: c_int = 0;
     const ph = zr_shrink_progress(&done, &total);
+    if (ph != 3) switch (shrinkWatch(ph, done, nowUs())) {
+        .ok => {},
+        .cancel => {
+            logf("shrink: no progress for {d} s (phase {d}, {d}/{d}); cancelling", .{ SHRINK_STALL_US / 1_000_000, ph, done, total });
+            zr_shrink_cancel();
+        },
+        .give_up => {
+            logf("shrink: still stuck after cancel; giving up (book unchanged)", .{});
+            shrink_abandoned = true;
+            _ = linux.unlink(&shrink_tmp);
+            lib_menu = .shrink_small;
+            setShrinkMsg("Shrink stopped (no progress); the book is unchanged", .{});
+            return markFull(WF_REAGL);
+        },
+    };
     if (ph == 3) {
         const rc = zr_shrink_result();
+        logf("shrink: finished rc={d}", .{rc});
         if (rc != 0) {
             _ = linux.unlink(&shrink_tmp);
             lib_menu = .shrink_small;
@@ -5021,7 +5269,7 @@ fn shrinkTick() void {
     shrink_last = key;
     shrink_tick_us = now;
     const pages = @divTrunc(total, 2);
-    if (ph == 2) setShrinkMsg("Saving smaller copy...", .{}) else if (done < pages) setShrinkMsg("Checking page {d}/{d}", .{ done + 1, pages }) else setShrinkMsg("Shrinking page {d}/{d}", .{ @min(done - pages + 1, pages), pages });
+    if (ph == 4) setShrinkMsg("Preparing images {d}%", .{@divTrunc(@as(i64, done) * 100, @max(total, 1))}) else if (ph == 2) setShrinkMsg("Saving smaller copy...", .{}) else if (done < pages) setShrinkMsg("Checking page {d}/{d}", .{ done + 1, pages }) else setShrinkMsg("Shrinking page {d}/{d}", .{ @min(done - pages + 1, pages), pages });
     markDirty(libMenuRect(1), WF_REAGL);
 }
 fn discardShrunk() void {
@@ -5463,6 +5711,19 @@ fn goPage(p: i32, t_ev: u64) void {
     if (np != pool.cur) pool.dir = if (np > pool.cur) 1 else -1;
     pool.cur = np;
     pool.step = 0;
+    // v0.12.0: a page turn from turnView sets the reflow screen itself (0 forward, last screen back);
+    // any other jump (slider, contents, bookmarks) opens the page on screen 1.
+    if (!rscreen_keep) pool.rscreen = 0;
+    rscreen_keep = false;
+    // A prepared reflow slot for this page on another screen than the one wanted is redone
+    // (cheaply, from the in-memory layout).
+    for (&pool.slots, 0..) |*sl, i| if (sl.page == np and sl.state == .ready and sl.rcount > 0 and @as(i32, @intCast(i)) != pool.shown) {
+        const want = if (pool.rscreen < 0) sl.rcount - 1 else pool.rscreen;
+        if (sl.rindex != want) {
+            sl.state = .empty;
+            sl.page = -1;
+        }
+    };
     search_hit = null;
     search_hit_until = 0;
     book.position = .{};
@@ -5640,9 +5901,6 @@ fn onReaderTap(x: i32, y: i32, t_ev: u64) void {
         return popupAction(3);
     }
     if (menu_open) {
-        if (panelButton(2, 2).contains(x, y)) return openDevice();
-        if (panelButton(2, 3).contains(x, y)) return showScreen(.bookmarks);
-        if (refreshButton().contains(x, y)) return cycleRefreshSetting();
         if (topButton(false).contains(x, y)) {
             saveState();
             scanLibrary();
@@ -5652,26 +5910,71 @@ fn onReaderTap(x: i32, y: i32, t_ev: u64) void {
             quit_requested = true;
             return;
         }
-        if (panelButton(2, 1).contains(x, y)) {
-            const exported = exportAllNotes();
-            toast("Exported {d} books / {d} errors", .{ exported.books, exported.errors });
-            return;
-        }
-        if (panelButton(2, 0).contains(x, y)) {
-            search_editing = true;
-            need_page = false;
-            return showScreen(.search);
-        }
-        if (panelButton(0, 0).contains(x, y)) {
-            showScreen(.toc);
-            return ensureDetectedToc();
-        }
-        if (panelButton(0, 1).contains(x, y)) return showScreen(.notes);
-        if (panelButton(0, 2).contains(x, y)) {
-            menu_open = false;
-            return markFull(WF_GC16);
-        }
-        if (book.is_pdf and panelButton(1, 3).contains(x, y)) {
+        if (menu_sub != .none) {
+            const sp = subPanel();
+            if (!sp.contains(x, y)) {
+                // Tap outside the sub-panel closes it; a main-row tap then acts as usual.
+                menu_sub = .none;
+                markDirty(sp, WF_GL16);
+                if (!bottomPanel().contains(x, y)) return;
+            } else if (menu_sub == .more) {
+                if (subButton(0, 0).contains(x, y)) return showScreen(.bookmarks);
+                if (subButton(0, 1).contains(x, y)) {
+                    const exported = exportAllNotes();
+                    toast("Exported {d} books / {d} errors", .{ exported.books, exported.errors });
+                    return;
+                }
+                if (subButton(0, 2).contains(x, y)) return openDevice();
+                if (subButton(0, 3).contains(x, y)) return closeSub();
+                if (refreshButton().contains(x, y)) return cycleRefreshSetting();
+                return;
+            } else if (book.reflow) {
+                if (subButton(1, 3).contains(x, y)) {
+                    menu_open = false;
+                    menu_sub = .none;
+                    return markFull(WF_GC16);
+                }
+                if (subButton(2, 0).contains(x, y)) {
+                    menu_open = false;
+                    menu_sub = .none;
+                    return goPage(0, t_ev);
+                }
+                if (subButton(2, 3).contains(x, y)) return closeSub();
+            const f = pool.font;
+            const m = pool.margin;
+            if (bookFontButton().contains(x, y)) return setTextStyle(text_mode, @mod(book_font + 1, 3));
+            if (textModeButton().contains(x, y)) return setTextStyle(@mod(text_mode + 2, 3), book_font);
+            if (spacingButton().contains(x, y)) {
+                const spacing: f32 = if (pool.spacing < 1.3) 1.4 else if (pool.spacing < 1.6) 1.7 else 1.15;
+                relayoutStyle(f, m, spacing);
+                need_page = true;
+                return;
+            }
+            if (subButton(0, 0).contains(x, y)) return relayoutAndShow(fontStep(f, -1), m);
+            if (subButton(0, 1).contains(x, y)) return relayoutAndShow(fontStep(f, 1), m);
+            if (subButton(0, 2).contains(x, y)) return relayoutAndShow(f, @max(m - 6, 0));
+            if (subButton(0, 3).contains(x, y)) return relayoutAndShow(f, @min(m + 6, 60));
+                return;
+            } else {
+                if (subButton(0, 0).contains(x, y)) {
+                    const mode: ViewMode = @fromBackingInt(@intCast((@backingInt(pool.view) + @as(u8, 1)) % 4));
+                    setView(mode, null);
+                    return;
+                }
+                if (subButton(0, 1).contains(x, y)) return setView(pool.view, null);
+                if (subButton(0, 2).contains(x, y)) {
+                _ = pthread_mutex_lock(&pool.mtx);
+                pool.trim = !pool.trim;
+                pool.gen +%= 1;
+                pool.shown = -1;
+                _ = pthread_cond_broadcast(&pool.cond);
+                _ = pthread_mutex_unlock(&pool.mtx);
+                book.words_page = -1;
+                book.state_dirty = true;
+                need_page = true;
+                return;
+                }
+                if (subButton(0, 3).contains(x, y)) {
             _ = pthread_mutex_lock(&pool.mtx);
             pool.split = !pool.split;
             pool.step = 0;
@@ -5684,53 +5987,56 @@ fn onReaderTap(x: i32, y: i32, t_ev: u64) void {
             need_page = true;
             toast("Split two-page scans: {s}", .{if (pool.split) "on" else "off"});
             return markFull(WF_REAGL);
-        }
-        if (panelButton(0, 3).contains(x, y)) {
-            if (book.is_pdf) {
-                _ = pthread_mutex_lock(&pool.mtx);
-                pool.trim = !pool.trim;
-                pool.gen +%= 1;
-                pool.shown = -1;
-                _ = pthread_cond_broadcast(&pool.cond);
-                _ = pthread_mutex_unlock(&pool.mtx);
-                book.words_page = -1;
-                book.state_dirty = true;
-                need_page = true;
+                }
+                if (reflowShown() and subButton(1, 0).contains(x, y)) {
+            _ = pthread_mutex_lock(&pool.mtx);
+            pool.reflow = switch (pool.reflow) {
+                0 => 15,
+                15 => 20,
+                else => 0,
+            };
+            pool.step = 0;
+            pool.gen +%= 1;
+            pool.shown = -1;
+            _ = pthread_cond_broadcast(&pool.cond);
+            _ = pthread_mutex_unlock(&pool.mtx);
+            book.words_page = -1;
+            book.state_dirty = true;
+            need_page = true;
+            toast("Reflow: {s}", .{REFLOW_NAMES[reflowIndex()][8..]});
+            return markFull(WF_REAGL);
+                }
+                if (subButton(1, 1).contains(x, y)) {
+                    menu_open = false;
+                    menu_sub = .none;
+                    return markFull(WF_GC16);
+                }
+                if (subButton(1, 3).contains(x, y)) return closeSub();
                 return;
             }
+        }
+        if (mainButton(0).contains(x, y)) {
+            showScreen(.toc);
+            return ensureDetectedToc();
+        }
+        if (mainButton(1).contains(x, y)) {
+            toggleBookmark();
             menu_open = false;
-            return goPage(0, t_ev);
+            return markFull(WF_GC16);
         }
-        if (book.is_pdf) {
-            if (panelButton(1, 0).contains(x, y)) {
-                const mode: ViewMode = @fromBackingInt(@intCast((@backingInt(pool.view) + @as(u8, 1)) % 4));
-                setView(mode, null);
-                return;
-            }
-            if (panelButton(1, 1).contains(x, y)) {
-                return setView(pool.view, null);
-            }
-            if (panelButton(1, 2).contains(x, y)) {
-                toggleBookmark();
-                menu_open = false;
-                return markFull(WF_GC16);
-            }
+        if (mainButton(2).contains(x, y)) return showScreen(.notes);
+        if (mainButton(3).contains(x, y)) {
+            search_editing = true;
+            need_page = false;
+            return showScreen(.search);
         }
-        if (book.reflow) {
-            const f = pool.font;
-            const m = pool.margin;
-            if (bookFontButton().contains(x, y)) return setTextStyle(text_mode, @mod(book_font + 1, 3));
-            if (textModeButton().contains(x, y)) return setTextStyle(@mod(text_mode + 2, 3), book_font);
-            if (spacingButton().contains(x, y)) {
-                const spacing: f32 = if (pool.spacing < 1.3) 1.4 else if (pool.spacing < 1.6) 1.7 else 1.15;
-                relayoutStyle(f, m, spacing);
-                need_page = true;
-                return;
-            }
-            if (panelButton(1, 0).contains(x, y)) return relayoutAndShow(fontStep(f, -1), m);
-            if (panelButton(1, 1).contains(x, y)) return relayoutAndShow(fontStep(f, 1), m);
-            if (panelButton(1, 2).contains(x, y)) return relayoutAndShow(f, @max(m - 6, 0));
-            if (panelButton(1, 3).contains(x, y)) return relayoutAndShow(f, @min(m + 6, 60));
+        if (mainButton(4).contains(x, y) or mainButton(5).contains(x, y)) {
+            const want: MenuSub = if (mainButton(4).contains(x, y)) .view else .more;
+            const old_area = menuArea();
+            menu_sub = if (menu_sub == want) .none else want;
+            // Partial greyscale update of the menu area only: no flash.
+            markDirty(Rect.unite(old_area, menuArea()), WF_GL16);
+            return;
         }
         if (bottomPanel().contains(x, y) or topBar().contains(x, y)) return;
         menu_open = false;
@@ -5753,8 +6059,14 @@ fn onReaderTap(x: i32, y: i32, t_ev: u64) void {
         return;
     }
     menu_open = true;
+    menu_sub = .none;
     markDirty(topBar(), WF_GL16);
     markDirty(bottomPanel(), WF_GL16);
+}
+fn closeSub() void {
+    const sp = subPanel();
+    menu_sub = .none;
+    markDirty(sp, WF_GL16);
 }
 
 const FONT_PX = [_]f32{ 14, 16, 18, 20, 23, 26, 30, 34, 40 };
@@ -7740,4 +8052,36 @@ test "v081 library bottom line screenshot with book count (illustrative values)"
         try std.testing.expect(writeFileAtomic(v.name, image.slice()));
     }
     nlib = 0; nvisible = 0; nfolders = 0; folder_filter = 0; opts.sim = null; storage_total = 0;
+}
+
+test "v0.12.0 reflow navigation steps through screens, then turns the page" {
+    try std.testing.expectEqual(@as(?i32, 1), reflowStep(3, 0, 1));
+    try std.testing.expectEqual(@as(?i32, 2), reflowStep(3, 1, 1));
+    try std.testing.expectEqual(@as(?i32, null), reflowStep(3, 2, 1)); // last screen: next page
+    try std.testing.expectEqual(@as(?i32, 1), reflowStep(3, 2, -1));
+    try std.testing.expectEqual(@as(?i32, null), reflowStep(3, 0, -1)); // first screen: previous page (its last screen)
+    try std.testing.expectEqual(@as(?i32, null), reflowStep(0, 0, 1)); // page view outcome: normal turn
+    try std.testing.expectEqual(@as(?i32, null), reflowStep(1, 0, -1));
+}
+test "v0.12.0 reflow state round-trip and Reflow row placement" {
+    const st = parseState("{\"page\":4,\"split\":1,\"reflow\":20,\"rscreen\":2}");
+    try std.testing.expectEqual(@as(u8, 20), st.reflow);
+    try std.testing.expectEqual(@as(i32, 2), st.rscreen);
+    const odd = parseState("{\"page\":4,\"reflow\":7}");
+    try std.testing.expectEqual(@as(u8, 0), odd.reflow);
+    const none = parseState("{\"page\":4}");
+    try std.testing.expectEqual(@as(u8, 0), none.reflow);
+    try std.testing.expectEqual(@as(i32, 0), none.rscreen);
+}
+
+test "v0.12.2 shrink watchdog cancels then gives up only without progress" {
+    shrink_progress_key = -1;
+    shrink_watch_cancelled = false;
+    const t0: u64 = 1_000_000_000;
+    try std.testing.expect(shrinkWatch(4, 10, t0) == .ok);
+    try std.testing.expect(shrinkWatch(4, 10, t0 + SHRINK_STALL_US - 1) == .ok);
+    try std.testing.expect(shrinkWatch(4, 11, t0 + SHRINK_STALL_US + 5) == .ok); // progress resets the clock
+    try std.testing.expect(shrinkWatch(4, 11, t0 + 2 * SHRINK_STALL_US + 6) == .cancel);
+    try std.testing.expect(shrinkWatch(4, 11, t0 + 2 * SHRINK_STALL_US + 7) == .ok);
+    try std.testing.expect(shrinkWatch(4, 11, t0 + 3 * SHRINK_STALL_US + 8) == .give_up);
 }

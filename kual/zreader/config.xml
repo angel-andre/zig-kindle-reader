@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <extension>
 	<information>
-		<name>Zig reader</name>
-		<version>0.2</version>
+		<name>Zig Reader</name>
+		<version>0.12.3</version>
 		<author>Angel</author>
 		<id>zreader</id>
 	</information>
