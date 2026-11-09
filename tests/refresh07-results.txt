@@ -1,8 +1,0 @@
-PASS digital-big: every=8, 74/434 full, 17.05/100 pages; {'opening': 1, 'cover': 1, 'text': 360, 'periodic': 44, 'image': 27, 'dark': 1}
-PASS digital-big: every=off, 30/434 full, 6.91/100 pages; {'opening': 1, 'cover': 1, 'text': 404, 'image': 27, 'dark': 1}
-PASS digital-small1: every=8, 45/332 full, 13.55/100 pages; {'opening': 1, 'cover': 1, 'image': 2, 'text': 287, 'periodic': 41}
-PASS digital-small1: every=off, 4/332 full, 1.20/100 pages; {'opening': 1, 'cover': 1, 'image': 2, 'text': 328}
-PASS digital-big 1 -> 2 -> 3 -> 4 = GC16 FULL, GC16 FULL, REAGL FULL, REAGL FULL
-PASS actual UI sequence, menu/library return, image-popup dismissal, setting cycle and persisted off
-PASS image-only ordered dithering: clipped footprint only, 16 levels, text bytes unchanged; image_coverage=0.199359 image_count=1
-PASS 30-series device-resolution screenshots and compact previews

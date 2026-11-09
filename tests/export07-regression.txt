@@ -1,2 +1,0 @@
-PASS every annotation edit/copy/delete rewrites clean Markdown; Export all handles an unopened book and escapes markup without following symlinks; Notes-list deletion removes JSON/TXT/MD text
-PASS Export all action / Notes-list screenshots and previews

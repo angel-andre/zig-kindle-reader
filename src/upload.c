@@ -95,7 +95,7 @@ static void send_export(int c,const char *target){char name[256],path[1500];
 
 uint64_t zr_up_free(const char *path){struct statvfs st;if(statvfs(path,&st))return 0;return (uint64_t)st.f_bavail*st.f_frsize;}
 
-static const char PAGE[]="<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'><title>Zigg Reader upload</title>"
+static const char PAGE[]="<!doctype html><html><head><meta name=viewport content='width=device-width,initial-scale=1'><title>Zig Reader upload</title>"
 "<style>body{font-family:sans-serif;max-width:32em;margin:2em auto;padding:0 1em}button,input{font-size:1.1em}</style></head><body>"
 "<h2>Send books to the Kindle</h2><p>PDF or EPUB only. Books go into the Books folder.</p>"
 "<input type=file id=f multiple accept='.pdf,.epub,.mobi,.azw3,.txt,.cbz,.fb2'><p><button onclick='go()'>Upload</button></p><pre id=s></pre>"

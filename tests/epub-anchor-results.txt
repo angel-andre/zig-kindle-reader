@@ -1,2 +1,0 @@
-PASS 54 typography layouts (9 sizes x 3 spacing x 2 margins), exact Unicode quote retained; 54 split-page highlight layouts; state/notes resolve after fresh reopen
-PASS native pointer bookmarks never serialized, repeated legacy quote disambiguated, missing quote/checksum mismatch fail closed

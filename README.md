@@ -2,7 +2,7 @@
 
 **A fast, native e-reader for jailbroken Kindles, written in Zig with MuPDF.**
 
-Version **0.12.3** · tested on a Kindle Paperwhite 12th generation (1272×1696) · other Kindles untested · GNU AGPL v3
+Version **0.12.4** · tested on a Kindle Paperwhite 12th generation (1272×1696) · other Kindles untested · GNU AGPL v3
 
 | Library | Library (Dark) | Book menu |
 | --- | --- | --- |
@@ -58,12 +58,12 @@ A weekend project. The stock Kindle software handles PDFs and scanned books poor
 
 **Requirements:** a **jailbroken** Kindle with **KUAL** installed. Tested only on the **Kindle Paperwhite 12th gen**; other models are untested. SSH (key-only) is optional but useful for recovery.
 
-Download `zr123.tgz` from the [v0.12.3 release](https://github.com/angel-andre/zig-kindle-reader/releases/tag/v0.12.3) (the same file is in [`release/zr123.tgz`](release/zr123.tgz)) and check it on your computer. Its SHA-256 must match the `release/zr123.tgz` line in [`release/SHA256SUMS`](release/SHA256SUMS):
+Download `zr124.tgz` from the [v0.12.4 release](https://github.com/angel-andre/zig-kindle-reader/releases/tag/v0.12.4) (the same file is in [`release/zr124.tgz`](release/zr124.tgz)) and check it on your computer. Its SHA-256 must match the `release/zr124.tgz` line in [`release/SHA256SUMS`](release/SHA256SUMS):
 
 ```sh
-sha256sum zr123.tgz      # macOS: shasum -a 256 zr123.tgz
-# expected: 0ce698cc21297ec8f38b3e9adccdf8f976364a196147adb2ce3315a08271996b
-mkdir zr123 && tar -xzf zr123.tgz -C zr123
+sha256sum zr124.tgz      # macOS: shasum -a 256 zr124.tgz
+# expected: 5e47eb5e408a1c8a93504b558374aba5c8a18d2413f01abf1b59daa05c6dc8f8
+mkdir zr124 && tar -xzf zr124.tgz -C zr124
 ```
 
 (From a full clone you can instead run `sha256sum -c release/SHA256SUMS` in the repository root.)
@@ -89,7 +89,7 @@ No `chmod` is needed. The Kindle's USB storage is FAT, so files can't carry perm
 
 ### B. SSH
 
-Copy `zr123.tgz` to `/mnt/us`, unpack it into an empty staging folder and copy the files to the paths in the table. The full step-by-step commands, including a backup first, are in [Install or upgrade](docs/INSTALL.md). Check with `/mnt/us/zreader/zreader --version` (expect `zreader 0.12.3`).
+Copy `zr124.tgz` to `/mnt/us`, unpack it into an empty staging folder and copy the files to the paths in the table. The full step-by-step commands, including a backup first, are in [Install or upgrade](docs/INSTALL.md). Check with `/mnt/us/zreader/zreader --version` (expect `zreader 0.12.4`).
 
 ### Update
 
@@ -101,7 +101,7 @@ Everything is in `/mnt/us/zreader/` (the `zreader` folder on the USB drive): `st
 
 ### Uninstall
 
-Quit the reader, copy `zreader/state`, `zreader/notes` and `zreader/export` to your computer if you want to keep them, then delete the `zreader` folder and `extensions/zreader` (over USB or SSH). Your books, KUAL and the Kindle system are untouched. Details and rollback to the previous release (`release/zr115.tgz`): [uninstall and rollback](docs/UNINSTALL.md).
+Quit the reader, copy `zreader/state`, `zreader/notes` and `zreader/export` to your computer if you want to keep them, then delete the `zreader` folder and `extensions/zreader` (over USB or SSH). Your books, KUAL and the Kindle system are untouched. Details and rollback to the previous release (`release/zr123.tgz`): [uninstall and rollback](docs/UNINSTALL.md).
 
 More: [user guide](docs/USER_GUIDE.md) · [prerequisites](docs/PREREQUISITES.md) · [release notes](release/README.md) · [troubleshooting](docs/TROUBLESHOOTING.md) · [safe cleanup](docs/DEBLOAT.md)
 
@@ -122,6 +122,7 @@ Full list: [docs/LIMITATIONS.md](docs/LIMITATIONS.md).
 
 | Version | Highlights |
 | --- | --- |
+| 0.12.4 | The Wi-Fi upload page is titled “Zig Reader upload”. |
 | 0.12.3 | Faster Shrink on JPEG 2000 and already-small scans; better reflow next to pictures and captions. |
 | 0.12.2 | Shrink watchdog; Shrink closes the open book first so it has the device to itself. |
 | 0.12.1 | Shrink for "mixed raster" scans (picture layer plus text mask). |
@@ -201,7 +202,7 @@ About these numbers: times are to the framebuffer update; the e-ink refresh itse
 
 ## Size
 
-0.12.3: the ARM executable is **7,820,496 bytes**; the runtime archive is **10.8 MB** (`zr123.tgz`), about **26 MiB** installed including the English (14.4 MB) and Latin (5.0 MB) dictionaries ([sizes](release/zr123-sizes.json)).
+0.12.4: the ARM executable is **7,820,496 bytes**; the runtime archive is **10.8 MB** (`zr124.tgz`), about **26 MiB** installed including the English (14.4 MB) and Latin (5.0 MB) dictionaries ([sizes](release/zr124-sizes.json)).
 
 ## Safety
 

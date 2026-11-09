@@ -1,4 +1,0 @@
-PASS legacy EPUB note migrated before layout; exact Unicode quote and chapter/scalar anchors retained through two font steps, margin and line-spacing changes
-PASS fresh-context reopen restores identical page raster and exact reading target; relocated annotation remains tappable/editable; precise new-word highlight writes correct portable location
-PASS actual 23px-equivalent / 17.25pt size, compact line spacing and margins persist byte-identically, without accumulated reading-position drift
-PASS EPUB migration/typography/highlights/reopen screenshots at 1272x1696 and previews

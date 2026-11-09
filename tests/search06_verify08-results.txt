@@ -1,2 +1,0 @@
-PASS real big-key query entry, exact two-page results, tap-to-jump preserves fit-width and scrolls to the hit; temporary highlight clears without saving a note
-PASS search keyboard/results/hit/cleared device-resolution screenshots and previews

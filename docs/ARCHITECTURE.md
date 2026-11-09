@@ -13,7 +13,7 @@
 - `dictionary/`: WordNet source archive, rebuild program, index, format and licence.
 - `tests/`: test reports, harnesses, results and generated sample files. No copyrighted books are included.
 - `docs/img/`: README screenshots made with `--sim` from public-domain sample books. `shots/` is scratch output for `--sim` and unit tests (not tracked).
-- `release/`: the 0.12.3 runtime and the 0.11.5 rollback runtime, plus checksums and size records.
+- `release/`: the 0.12.4 runtime and the 0.12.3 rollback runtime, plus checksums and size records.
 
 The display path uses the PW6 MTK hwtcon interface. Normal REAGL turns and GC16 FULL cleans are explicit policy choices, not framebuffer mode changes. Hardware inversion remains inherited. Brightness/warmth use powerd LIPC; no raw backlight writes. The launcher reads/restores the existing CPU governor; it does not remove platform services from disk.
 

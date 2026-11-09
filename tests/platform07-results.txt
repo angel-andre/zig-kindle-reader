@@ -1,9 +1,0 @@
-PASS LIPC startup reads/no writes, debounce/clamp, subscription, suspend/wake commands and cleanup
-PASS final deliberate light change flushed even on immediate exit
-PASS failed LIPC write reported, last confirmed level retained
-PASS hung CLI killed and reaped within timeout
-PASS lazy isolated first-page cover, 4536 ink pixels, bounded cache; 102 ms worker (not UI)
-Recovery commands completed: reader stop, UI resume, pillow/statusbar restart, powerd inhibitor clear requested. Verify the screen.
-If still asleep, press power once. Light and dark-mode settings were not changed.
-PASS cache <=10 MiB after eviction; symlink target preserved; real image-heavy PDF cover path
-PASS independent restore-ui sandbox resumes exact pause list, pillow/statusbar, inhibitor; no device touched

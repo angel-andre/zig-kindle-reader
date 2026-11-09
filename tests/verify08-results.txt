@@ -1,8 +1,0 @@
-PASS physical-input stream: cross-line drag, underline, tap-to-edit, style change, copy and delete; JSON/TXT exact
-PASS both physical-input handle adjustments: exact trimmed endpoints
-PASS reversed physical-input selection preserves reading order
-PASS 3 cached page turns, menu, contents and notes; REAGL retained
-PASS EPUB open/reflow, font increase and page turn
-PASS ARM EABI static executable and static host executable
-PASS source-fidelity comparison: drop-cap pixels unchanged (SOURCE LAYOUT STILL DEFECTIVE, NOT FIXED)
-PASS device-resolution screenshots and small PNG previews generated

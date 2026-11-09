@@ -24,6 +24,6 @@ No package manager, rootfs cleanup, service deletion or jailbreak reversal is re
 
 ## Rollback
 
-Restore your saved previous executable, launcher and KUAL extension while closed. The previous release, 0.11.5, is kept as `release/zr115.tgz` (install it exactly like 0.12.3; `zreader --version` then prints `zreader 0.11.5`). Preserve newer notes/state first; older versions may not understand every new field or anchor format. For an exact rollback, restore a matched older runtime and its corresponding backed-up user data. Do not overwrite your only copy of newer notes. Reopen and verify the expected version.
+Restore your saved previous executable, launcher and KUAL extension while closed. The previous release, 0.12.3, is kept as `release/zr123.tgz` (install it exactly like 0.12.4; `zreader --version` then prints `zreader 0.12.3`). Preserve newer notes/state first; older versions may not understand every new field or anchor format. For an exact rollback, restore a matched older runtime and its corresponding backed-up user data. Do not overwrite your only copy of newer notes. Reopen and verify the expected version.
 
 Removing the reader cannot restore deleted crash dumps or VoiceView files. Those require a backup; VoiceView reinstallation is firmware-dependent and was not validated in this project.

@@ -1,2 +1,0 @@
-PASS real touch: fit-page, auto-cropped fit-width, next/previous slices, double-tap 1.5x/2x, pan and exact per-book restore
-PASS view screenshots/previews and unchanged fixed-size raster buffers

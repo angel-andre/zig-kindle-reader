@@ -20,3 +20,5 @@ tests/run-*/
 
 # Scratch output of --sim screenshots and unit tests
 shots/
+tests/page17-after.tsv
+tests/page19-after.tsv

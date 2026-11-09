@@ -57,6 +57,6 @@ A more detailed plan is at the end of REFERENCE_MANUAL.txt.
 
 ## Latest run
 
-0.12.3: all 32 Zig tests pass (including reflow navigation, the saved reflow state and the Shrink watchdog), `./build.sh` rebuilds the exact released ARM binary (SHA-256 `6d24dcbf…ecf7b`), and all release and dictionary checksums verify. `tests/reflow_unit.c` checks that a cached reflow analysis gives pixel-identical screens and that corrupt or missing cache files are rejected; `tests/reflowhook_probe.c` shows what the reader draws for one page with Reflow on.
+0.12.4: `tests/run.sh` passes (all 32 Zig tests, including reflow navigation, the saved reflow state and the Shrink watchdog, plus the render, EPUB anchor, dictionary and search probes; two render probes use my own book copies in `../testbooks/`), `./build.sh` rebuilds the exact released ARM binary (SHA-256 `eed5dace…3975`), and all release and dictionary checksums verify. `tests/reflow_unit.c` checks that a cached reflow analysis gives pixel-identical screens and that corrupt or missing cache files are rejected; `tests/reflowhook_probe.c` shows what the reader draws for one page with Reflow on.
 
 The README screenshots in `docs/img/` come from `out/zreader-host --sim SCRIPT --shots DIR` with public-domain sample books only.

@@ -2,6 +2,10 @@
 
 Earlier versions were early prototypes and are not listed.
 
+## 0.12.4
+
+A naming fix. The Wi-Fi upload page in the browser is now titled “Zig Reader upload”, matching the name I use everywhere else (it said “Zigg”). Nothing else changes; reading, Reflow and Shrink are exactly as in 0.12.3.
+
 ## 0.12.3
 
 Faster Shrink and better reflow beside pictures. Shrink now decodes the colour layer of JPEG 2000 scans at half resolution directly (the finest detail level, which would be thrown away anyway, is never decoded), and a lossy image that won't be resampled and is already below 0.9 bits per pixel is no longer decoded only to be re-encoded (a new small MuPDF patch, `mupdf-patches/09`). Reflow keeps text lines that sit inside a kept picture box (for example the first lines beside an illustration) and small caption tiles as text, so they are set with the rest of the page. Reflow cache files from 0.12.0–0.12.2 are re-analysed automatically. Normal page views, digital PDFs and EPUBs render exactly as before.

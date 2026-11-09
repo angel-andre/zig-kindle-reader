@@ -1,3 +1,0 @@
-warning: expected name after CMapName in cmap
-warning: ... repeated 2 times...
-PASS case-insensitive PDF phrase + context/geometry, unknown/empty query, bounded matches, fit-width target and 126 EPUB hits before/after reflow
